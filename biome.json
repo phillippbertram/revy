@@ -6,6 +6,9 @@
     "useIgnoreFile": true,
     "defaultBranch": "main"
   },
+  "files": {
+    "includes": ["**", "!apps/desktop/src/generated"]
+  },
   "formatter": {
     "enabled": true,
     "indentStyle": "space",

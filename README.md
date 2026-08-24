@@ -1,80 +1,85 @@
 # Shippy
 
-Shippy is a desktop application for reviewing the changes on a repository's current branch
-before they ship.
+Shippy is a local Electron application for reviewing every change on the current Git branch before
+it ships. It combines committed branch changes with staged, unstaged, and untracked work, then asks
+an existing local Codex installation for a focused Markdown review.
 
-The project is currently at its foundation stage. The Electron shell consumes shared React,
-Tailwind CSS, and shadcn/ui foundations from reusable workspace packages, while repository
-selection and Git review functionality are intentionally not implemented yet.
+The MVP provides:
+
+- native repository selection, canonical Git-root detection, recent repositories, and selectable
+  base branches;
+- read-only change discovery through the system Git installation;
+- one cancellable Codex review at a time, using models and reasoning efforts discovered from Codex
+  App Server;
+- immutable Markdown review history stored in Electron app data;
+- safe `shippy://code` links that open current working-tree files in a read-only source panel; and
+- global format, model, reasoning, and personal-style settings plus repository-specific review
+  instructions.
 
 ## Requirements
 
 - Node.js 22.12 or newer
-- pnpm 11.15.1
+- pnpm 11.15.1 through Corepack
+- Git available on `PATH`
+- an installed and authenticated Codex CLI (`codex login`)
 
-## Getting started
+Codex App Server is an experimental external dependency. Shippy does not install, update,
+authenticate, or modify the configuration of Codex. See the
+[official App Server documentation](https://developers.openai.com/codex/app-server).
+
+## Development
 
 ```sh
 pnpm install
 pnpm dev
 ```
 
-## Commands
+Open a repository, confirm its detected base branch, optionally choose a project review skill, and
+start the review. Completed reviews remain available after restart; cancelled and failed runs are
+not saved.
 
 | Command | Purpose |
 | --- | --- |
 | `pnpm dev` | Start the Electron app in development mode |
-| `pnpm dev:desktop` | Start the Electron app explicitly |
 | `pnpm build` | Type-check and build the desktop app |
 | `pnpm start` | Preview the production build |
-| `pnpm start:desktop` | Preview the desktop production build explicitly |
-| `pnpm typecheck` | Check the main, preload, and renderer TypeScript projects |
 | `pnpm check` | Run Biome and TypeScript checks |
 | `pnpm check:fix` | Apply safe Biome fixes and run TypeScript checks |
+
+Automated tests are intentionally not part of this project.
+
+## Privacy and storage
+
+Repositories are treated as read-only. Git, filesystem, persistence, and Codex subprocess access
+stay in Electron's main process and are exposed through a narrow validated preload API. Reviews and
+settings are written below Electron's platform-specific `userData` directory, never inside the
+selected repository.
+
+See [Architecture](docs/architecture.md) for the canonical process, security, storage, and module
+boundaries.
 
 ## Workspace
 
 ```text
-.
-├── apps
-│   └── desktop              Electron main, preload, and renderer processes
-└── packages
-    ├── typescript-config    Shared strict TypeScript configurations
-    └── ui                   Shared React components, styles, and shadcn source
+apps/desktop              Electron application and app-local contracts
+packages/typescript-config
+packages/ui               Shared React components, styles, and shadcn source
 ```
 
-Applications may depend on packages; packages never depend on applications. Shared workspace
-dependencies use `workspace:*`, while external versions are pinned once in the pnpm catalog.
-See [Architecture](docs/architecture.md) for the module boundaries.
-
-The desktop workspace is the shadcn CLI entrypoint and routes reusable primitives into
-`@shippy/ui`. Add components from the repository root with:
+External versions are exact and centralized in the pnpm catalog. Shared UI components are added
+through the desktop shadcn entrypoint:
 
 ```sh
 pnpm --filter @shippy/desktop exec shadcn add <component>
 ```
 
-Consumers import shared modules through explicit package exports:
+The checked-in Codex protocol bindings reflect the development CLI version. Regenerate them after
+an intentional Codex protocol update:
 
-```tsx
-import { Card } from '@shippy/ui/components/card'
-import '@shippy/ui/globals.css'
+```sh
+cd apps/desktop
+codex app-server generate-ts --experimental --out ./src/generated/codex-app-server
 ```
-
-## Agent support
-
-Project rules live in `AGENTS.md` files and repository skills live under `.agents/skills`.
-Claude Code receives the same instructions through lightweight `CLAUDE.md` adapters and shared
-skill links; GitHub Copilot receives a repository adapter without duplicating the canonical rules.
-
-## Roadmap
-
-The next product milestone is opening a local Git repository and presenting the changes on its
-current branch for review. No file-system or Git access is exposed to the renderer in this initial
-version. A future Next.js application can be added under `apps/web` and reuse the existing UI and
-TypeScript configuration packages without changing their platform-neutral contracts.
-
-Automated tests are intentionally not part of this project.
 
 ## License
 

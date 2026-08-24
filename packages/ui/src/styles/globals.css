@@ -95,3 +95,58 @@
     font: inherit;
   }
 }
+
+@layer components {
+  .review-markdown h1 {
+    @apply mt-0 mb-5 text-2xl font-semibold tracking-tight;
+  }
+
+  .review-markdown h2 {
+    @apply mt-9 mb-3 border-b pb-2 text-lg font-semibold tracking-tight;
+  }
+
+  .review-markdown h3 {
+    @apply mt-7 mb-2 font-semibold;
+  }
+
+  .review-markdown p {
+    @apply my-3;
+  }
+
+  .review-markdown ul {
+    @apply my-3 list-disc space-y-1 pl-6;
+  }
+
+  .review-markdown ol {
+    @apply my-3 list-decimal space-y-1 pl-6;
+  }
+
+  .review-markdown blockquote {
+    @apply my-4 border-l-2 border-primary/50 pl-4 text-muted-foreground;
+  }
+
+  .review-markdown code {
+    @apply rounded bg-muted px-1.5 py-0.5 font-mono text-[0.88em];
+  }
+
+  .review-markdown pre {
+    @apply my-4 overflow-x-auto rounded-lg border bg-black/25 p-4;
+  }
+
+  .review-markdown pre code {
+    @apply bg-transparent p-0;
+  }
+
+  .review-markdown table {
+    @apply my-5 w-full border-collapse text-sm;
+  }
+
+  .review-markdown th,
+  .review-markdown td {
+    @apply border px-3 py-2 text-left align-top;
+  }
+
+  .review-markdown hr {
+    @apply my-7 border-border;
+  }
+}
