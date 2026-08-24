@@ -10,14 +10,16 @@
   },
   "packageManager": "pnpm@11.15.1",
   "scripts": {
-    "build": "pnpm --filter @shippy/desktop build",
+    "build": "pnpm --recursive --if-present build",
     "check": "biome check . && pnpm typecheck",
     "check:fix": "biome check --write . && pnpm typecheck",
-    "dev": "pnpm --filter @shippy/desktop dev",
-    "start": "pnpm --filter @shippy/desktop start",
-    "typecheck": "pnpm --filter @shippy/desktop typecheck"
+    "dev": "pnpm dev:desktop",
+    "dev:desktop": "pnpm --filter @shippy/desktop dev",
+    "start": "pnpm start:desktop",
+    "start:desktop": "pnpm --filter @shippy/desktop start",
+    "typecheck": "pnpm --recursive --if-present typecheck"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.9"
+    "@biomejs/biome": "catalog:"
   }
 }

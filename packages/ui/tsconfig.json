@@ -1,0 +1,8 @@
+{
+  "extends": "@shippy/typescript-config/react.json",
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
+}

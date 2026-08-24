@@ -1,6 +1,12 @@
+import { Badge } from '@shippy/ui/components/badge'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@shippy/ui/components/card'
 import { GitCompareArrows, Layers3, ShipWheel } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 
 const foundationItems = [
   {

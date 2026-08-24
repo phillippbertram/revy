@@ -1,0 +1,12 @@
+{
+  "name": "@shippy/typescript-config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared TypeScript configurations for Shippy workspaces.",
+  "exports": {
+    "./base.json": "./base.json",
+    "./node.json": "./node.json",
+    "./react.json": "./react.json"
+  }
+}

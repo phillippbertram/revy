@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prepare Pull Request"
+  short_description: "Draft a PR from committed Shippy branch changes"
+  default_prompt: "Use $prepare-pull-request to draft a concise Shippy pull request."

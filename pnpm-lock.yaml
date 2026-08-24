@@ -4,71 +4,167 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+catalogs:
+  default:
+    '@biomejs/biome':
+      specifier: 2.5.9
+      version: 2.5.9
+    '@tailwindcss/vite':
+      specifier: 4.3.3
+      version: 4.3.3
+    '@types/node':
+      specifier: 24.13.3
+      version: 24.13.3
+    '@types/react':
+      specifier: 19.2.7
+      version: 19.2.7
+    '@types/react-dom':
+      specifier: 19.2.3
+      version: 19.2.3
+    '@vitejs/plugin-react':
+      specifier: 5.1.1
+      version: 5.1.1
+    class-variance-authority:
+      specifier: 0.7.1
+      version: 0.7.1
+    clsx:
+      specifier: 2.1.1
+      version: 2.1.1
+    electron:
+      specifier: 43.4.0
+      version: 43.4.0
+    electron-vite:
+      specifier: 5.0.0
+      version: 5.0.0
+    lucide-react:
+      specifier: 1.33.0
+      version: 1.33.0
+    react:
+      specifier: 19.2.8
+      version: 19.2.8
+    react-dom:
+      specifier: 19.2.8
+      version: 19.2.8
+    shadcn:
+      specifier: 4.19.0
+      version: 4.19.0
+    tailwind-merge:
+      specifier: 3.6.0
+      version: 3.6.0
+    tailwindcss:
+      specifier: 4.3.3
+      version: 4.3.3
+    tw-animate-css:
+      specifier: 1.4.0
+      version: 1.4.0
+    typescript:
+      specifier: 7.0.2
+      version: 7.0.2
+    vite:
+      specifier: 7.3.6
+      version: 7.3.6
+
 importers:
 
   .:
     devDependencies:
       '@biomejs/biome':
-        specifier: 2.5.9
+        specifier: 'catalog:'
         version: 2.5.9
 
   apps/desktop:
     dependencies:
-      class-variance-authority:
-        specifier: 0.7.1
-        version: 0.7.1
-      clsx:
-        specifier: 2.1.1
-        version: 2.1.1
+      '@shippy/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
       lucide-react:
-        specifier: 1.33.0
+        specifier: 'catalog:'
         version: 1.33.0(react@19.2.8)
       react:
-        specifier: 19.2.8
+        specifier: 'catalog:'
         version: 19.2.8
       react-dom:
-        specifier: 19.2.8
+        specifier: 'catalog:'
         version: 19.2.8(react@19.2.8)
-      tailwind-merge:
-        specifier: 3.6.0
-        version: 3.6.0
-      tw-animate-css:
-        specifier: 1.4.0
-        version: 1.4.0
     devDependencies:
+      '@shippy/typescript-config':
+        specifier: workspace:*
+        version: link:../../packages/typescript-config
       '@tailwindcss/vite':
-        specifier: 4.3.3
+        specifier: 'catalog:'
         version: 4.3.3(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0))
       '@types/node':
-        specifier: 24.13.3
+        specifier: 'catalog:'
         version: 24.13.3
       '@types/react':
-        specifier: 19.2.7
+        specifier: 'catalog:'
         version: 19.2.7
       '@types/react-dom':
-        specifier: 19.2.3
+        specifier: 'catalog:'
         version: 19.2.3(@types/react@19.2.7)
       '@vitejs/plugin-react':
-        specifier: 5.1.1
+        specifier: 'catalog:'
         version: 5.1.1(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0))
       electron:
-        specifier: 43.4.0
+        specifier: 'catalog:'
         version: 43.4.0
       electron-vite:
-        specifier: 5.0.0
+        specifier: 'catalog:'
         version: 5.0.0(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0))
       shadcn:
-        specifier: 4.19.0
+        specifier: 'catalog:'
         version: 4.19.0(typescript@7.0.2)
       tailwindcss:
-        specifier: 4.3.3
+        specifier: 'catalog:'
         version: 4.3.3
       typescript:
-        specifier: 7.0.2
+        specifier: 'catalog:'
         version: 7.0.2
       vite:
-        specifier: 7.3.6
+        specifier: 'catalog:'
         version: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)
+
+  packages/typescript-config: {}
+
+  packages/ui:
+    dependencies:
+      class-variance-authority:
+        specifier: 'catalog:'
+        version: 0.7.1
+      clsx:
+        specifier: 'catalog:'
+        version: 2.1.1
+      tailwind-merge:
+        specifier: 'catalog:'
+        version: 3.6.0
+      tw-animate-css:
+        specifier: 'catalog:'
+        version: 1.4.0
+    devDependencies:
+      '@shippy/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
+      '@types/react':
+        specifier: 'catalog:'
+        version: 19.2.7
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.7)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
+      shadcn:
+        specifier: 'catalog:'
+        version: 4.19.0(typescript@7.0.2)
+      tailwindcss:
+        specifier: 'catalog:'
+        version: 4.3.3
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
 
 packages:
 
