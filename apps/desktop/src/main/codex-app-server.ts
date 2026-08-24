@@ -25,6 +25,7 @@ import type {
   CodexModel,
   StructuredReview,
 } from '../shared/contracts.js'
+import { reviewerReviewStepId } from '../shared/contracts.js'
 import { parseStructuredReview } from '../shared/review-formats.js'
 import { createLogger, logError } from './logger.js'
 
@@ -156,6 +157,25 @@ const webSearchItemSchema = z.looseObject({
   id: z.string().min(1),
   type: z.literal('webSearch'),
 })
+const reasoningItemSchema = z.looseObject({
+  id: z.string().min(1),
+  summary: z.array(z.string()),
+  type: z.literal('reasoning'),
+})
+const reasoningSummaryDeltaSchema = z.looseObject({
+  delta: z.string(),
+  itemId: z.string().min(1),
+  summaryIndex: z.number().int().nonnegative(),
+  threadId: z.string(),
+  turnId: z.string(),
+})
+const intentionallyHiddenActivityItemTypes = new Set([
+  'agentMessage',
+  'enteredReviewMode',
+  'exitedReviewMode',
+  'reasoning',
+  'userMessage',
+])
 const errorNotificationSchema = z.looseObject({
   threadId: z.string(),
   turnId: z.string(),
@@ -222,13 +242,21 @@ interface ActiveReview {
   interruptTurnId: string | null
   markdown: string | null
   onActivity: (activity: BackendActivity) => void
+  onStepEvent: (event: BackendStepEvent) => void
+  reasoningSummaries: Map<string, ActiveReasoningSummary>
   repositoryRoot: string
   reviewerIdentity: ReviewerActivityIdentity | null
   reject: (error: Error) => void
   resolve: (value: BackendReviewResult) => void
   reviewTurnId: string | null
+  stepId: string
   threadId: string
   turnIds: Map<string, string>
+}
+
+interface ActiveReasoningSummary {
+  occurredAt: string
+  parts: string[]
 }
 
 export interface ReviewerAgentConfiguration {
@@ -252,14 +280,40 @@ export interface StartBackendReviewInput {
   model: string
   onActivity: (activity: BackendActivity) => void
   onProgress: (message: string) => void
+  onStepEvent: (event: BackendStepEvent) => void
   prompt: string
   reasoningEffort: string
   repositoryRoot: string
   reviewerIdentity?: ReviewerActivityIdentity
   reviewerAgents: ReviewerAgentConfiguration[]
+  stepId: string
 }
 
 export type BackendActivity = Omit<AgentActivityEntry, 'runId' | 'sequence'>
+
+export type BackendStepEvent =
+  | {
+      occurredAt: string
+      stepId: string
+      type: 'started'
+    }
+  | {
+      completed: boolean
+      id: string
+      occurredAt: string
+      stepId: string
+      text: string
+      truncated: boolean
+      type: 'reasoning-summary'
+    }
+  | {
+      error: string | null
+      occurredAt: string
+      output: StructuredReview | null
+      status: 'completed' | 'failed'
+      stepId: string
+      type: 'result'
+    }
 
 export interface BackendReviewResult {
   instructionSources: string[]
@@ -368,6 +422,7 @@ function activityFromItem(
   phase: 'started' | 'completed',
   occurredAt: string,
   repositoryRoot: string,
+  stepId: string,
 ): BackendActivity | null {
   const base = itemBaseSchema.safeParse(value)
   if (!base.success) {
@@ -402,6 +457,7 @@ function activityFromItem(
       occurredAt,
       paths,
       status: activityStatus(parsed.data.status),
+      stepId,
       title: commandTitle(parsed.data.commandActions),
     }
   }
@@ -424,6 +480,7 @@ function activityFromItem(
         .filter((path): path is string => path !== null)
         .slice(0, 32),
       status: 'warning',
+      stepId,
       title: 'Codex reported an unexpected file-change attempt.',
     }
   }
@@ -443,6 +500,7 @@ function activityFromItem(
       occurredAt,
       paths: [],
       status: activityStatus(parsed.data.status),
+      stepId,
       title: 'Used an external tool.',
     }
   }
@@ -465,6 +523,7 @@ function activityFromItem(
       occurredAt,
       paths: [],
       status: activityStatus(parsed.data.status),
+      stepId,
       title: 'Used an agent tool.',
     }
   }
@@ -484,6 +543,7 @@ function activityFromItem(
       occurredAt,
       paths: [],
       status: activityStatus(parsed.data.status),
+      stepId,
       title: 'Coordinated agent work.',
     }
   }
@@ -508,6 +568,7 @@ function activityFromItem(
           : parsed.data.kind === 'interrupted'
             ? 'interrupted'
             : 'completed',
+      stepId,
       title:
         parsed.data.kind === 'started'
           ? 'Reviewer started.'
@@ -532,11 +593,14 @@ function activityFromItem(
       occurredAt,
       paths: [],
       status: phase === 'started' ? 'in-progress' : 'completed',
+      stepId,
       title: 'Searched the web.',
     }
   }
 
-  logger.debug('Ignored unsupported Codex activity item', { itemType: base.data.type })
+  if (!intentionallyHiddenActivityItemTypes.has(base.data.type)) {
+    logger.debug('Ignored unsupported Codex activity item', { itemType: base.data.type })
+  }
   return null
 }
 
@@ -687,6 +751,7 @@ export class CodexAppServerBackend implements ReviewBackend {
       approvalPolicy: 'never',
       config: {
         model_reasoning_effort: input.reasoningEffort,
+        model_reasoning_summary: 'detailed',
         ...(input.disableSubagents ? { agents: { enabled: false } } : {}),
       },
       cwd: input.repositoryRoot,
@@ -718,11 +783,14 @@ export class CodexAppServerBackend implements ReviewBackend {
       interruptTurnId: null,
       markdown: null,
       onActivity: input.onActivity,
+      onStepEvent: input.onStepEvent,
+      reasoningSummaries: new Map(),
       repositoryRoot: input.repositoryRoot,
       reviewerIdentity: input.reviewerIdentity ?? null,
       reject: rejectReview,
       resolve: resolveReview,
       reviewTurnId: null,
+      stepId: input.stepId,
       threadId: threadResult.thread.id,
       turnIds: new Map(),
     }
@@ -831,6 +899,7 @@ export class CodexAppServerBackend implements ReviewBackend {
       throw new Error('Codex is unavailable. Retry the connection from Settings.')
     }
     const backend = new CodexAppServerBackend()
+    const stepId = reviewerReviewStepId(reviewer.profileId)
     backend.executable = this.executable
     backend.version = this.version
     this.reviewerBackends.add(backend)
@@ -844,6 +913,7 @@ export class CodexAppServerBackend implements ReviewBackend {
         model: reviewer.model,
         onActivity: input.onActivity,
         onProgress: () => undefined,
+        onStepEvent: input.onStepEvent,
         prompt: reviewer.prompt,
         reasoningEffort: reviewer.reasoningEffort,
         repositoryRoot: input.repositoryRoot,
@@ -854,13 +924,23 @@ export class CodexAppServerBackend implements ReviewBackend {
           profileId: reviewer.profileId,
           reasoningEffort: reviewer.reasoningEffort,
         },
+        stepId,
+      })
+      const review = parseStructuredReview(result.markdown)
+      input.onStepEvent({
+        error: null,
+        occurredAt: new Date().toISOString(),
+        output: review,
+        status: 'completed',
+        stepId,
+        type: 'result',
       })
       return {
         instructionSources: result.instructionSources,
         outcome: {
           error: null,
           profileId: reviewer.profileId,
-          review: parseStructuredReview(result.markdown),
+          review,
           status: 'completed',
         },
       }
@@ -872,6 +952,14 @@ export class CodexAppServerBackend implements ReviewBackend {
         throw new Error('The review was cancelled.')
       }
       logError('codex', 'Reviewer thread failed', error)
+      input.onStepEvent({
+        error: 'Reviewer thread did not complete.',
+        occurredAt: new Date().toISOString(),
+        output: null,
+        status: 'failed',
+        stepId,
+        type: 'result',
+      })
       return {
         instructionSources: [],
         outcome: {
@@ -1023,15 +1111,18 @@ export class CodexAppServerBackend implements ReviewBackend {
         if (parsed.threadId === review.threadId) {
           review.interruptTurnId = parsed.turn.id
         }
+        const occurredAt = timestampFromSeconds(parsed.turn.startedAt)
+        review.onStepEvent({ occurredAt, stepId: review.stepId, type: 'started' })
         this.publishReviewActivity(review, {
           durationMs: null,
           exitCode: null,
           id: parsed.turn.id,
           kind: 'lifecycle',
           name: null,
-          occurredAt: timestampFromSeconds(parsed.turn.startedAt),
+          occurredAt,
           paths: [],
           status: 'in-progress',
+          stepId: review.stepId,
           title: 'Codex review turn started.',
         })
         if (review.cancelRequested) {
@@ -1042,6 +1133,28 @@ export class CodexAppServerBackend implements ReviewBackend {
           })
         }
       }
+      return
+    }
+
+    if (method === 'item/reasoning/summaryTextDelta') {
+      const notification = reasoningSummaryDeltaSchema.safeParse(params)
+      const review = this.activeReview
+      if (
+        !notification.success ||
+        !review ||
+        notification.data.threadId !== review.threadId ||
+        (review.reviewTurnId && notification.data.turnId !== review.reviewTurnId)
+      ) {
+        return
+      }
+      const current = review.reasoningSummaries.get(notification.data.itemId) ?? {
+        occurredAt: new Date().toISOString(),
+        parts: [],
+      }
+      current.parts[notification.data.summaryIndex] =
+        (current.parts[notification.data.summaryIndex] ?? '') + notification.data.delta
+      review.reasoningSummaries.set(notification.data.itemId, current)
+      this.publishReasoningSummary(review, notification.data.itemId, current, false)
       return
     }
 
@@ -1077,12 +1190,22 @@ export class CodexAppServerBackend implements ReviewBackend {
           phase === 'started' ? notification.data.startedAtMs : notification.data.completedAtMs,
         ),
         review.repositoryRoot,
+        review.stepId,
       )
       if (activity) {
         this.publishReviewActivity(review, activity)
       }
 
       if (method === 'item/completed') {
+        const reasoning = reasoningItemSchema.safeParse(notification.data.item)
+        if (reasoning.success && reasoning.data.summary.length > 0) {
+          const current = {
+            occurredAt: timestampFromMilliseconds(notification.data.completedAtMs),
+            parts: reasoning.data.summary,
+          }
+          review.reasoningSummaries.set(reasoning.data.id, current)
+          this.publishReasoningSummary(review, reasoning.data.id, current, true)
+        }
         const validated = itemCompletedSchema.safeParse(params)
         const parsed = validated.success ? (validated.data as ItemCompletedProjection) : null
         if (parsed) {
@@ -1121,6 +1244,7 @@ export class CodexAppServerBackend implements ReviewBackend {
         occurredAt: timestampFromSeconds(parsed.turn.completedAt),
         paths: [],
         status,
+        stepId: this.activeReview.stepId,
         title:
           status === 'completed'
             ? 'Codex review turn completed.'
@@ -1168,6 +1292,7 @@ export class CodexAppServerBackend implements ReviewBackend {
           occurredAt: new Date().toISOString(),
           paths: [],
           status: 'warning',
+          stepId: this.activeReview.stepId,
           title: parsed.data.willRetry
             ? 'Codex reported an error and will retry.'
             : 'Codex reported an error.',
@@ -1188,6 +1313,28 @@ export class CodexAppServerBackend implements ReviewBackend {
       instructionSources: review.instructionSources,
       markdown: review.markdown,
       reviewerOutcomes: [],
+    })
+  }
+
+  private publishReasoningSummary(
+    review: ActiveReview,
+    id: string,
+    summary: ActiveReasoningSummary,
+    completed: boolean,
+  ): void {
+    const fullText = summary.parts.filter(Boolean).join('\n\n').trim()
+    if (!fullText) {
+      return
+    }
+    const maximumLength = 100_000
+    review.onStepEvent({
+      completed,
+      id,
+      occurredAt: summary.occurredAt,
+      stepId: review.stepId,
+      text: fullText.slice(0, maximumLength),
+      truncated: fullText.length > maximumLength,
+      type: 'reasoning-summary',
     })
   }
 

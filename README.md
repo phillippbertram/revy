@@ -25,8 +25,8 @@ It is built around four ideas:
   correctness, test, and custom reviewers.
 - **Keep the developer in control.** Revy inspects and reports; it does not modify the selected
   repository.
-- **Make results durable.** Structured findings, workflow coverage, user-story context, and a safe
-  activity trail remain available after restart.
+- **Make results durable.** Structured findings, per-step evidence, workflow coverage, user-story
+  context, and a safe activity trail remain available after restart.
 
 ## From branch to review
 
@@ -49,8 +49,9 @@ flowchart LR
    staged, unstaged, or untracked work.
 3. **Shape the review.** Select Standard Review, a built-in or custom workflow, optional project
    instructions, and one-run user-story context.
-4. **Follow the run.** A live workflow map and privacy-filtered activity show preparation, reviewer
-   progress, consolidation, and saving. One run can be cancelled at any time.
+4. **Follow the run.** A live workflow map and shared step inspector show validated reviewer
+   results, readable reasoning summaries, scoped activity, consolidation, and saving. One run can
+   be cancelled at any time.
 5. **Work with the result.** Review P0–P3 findings, open bounded source previews, see partial coverage
    or stale-scope warnings, and copy the complete review or a single finding.
 
@@ -86,8 +87,9 @@ so later configuration edits cannot rewrite historical coverage.
 - Optional user-story context with explicit requirement and acceptance-criteria checks.
 - Immutable structured review history with P0–P3 findings, summaries, workflow coverage, and legacy
   Markdown support.
-- Live and persistent activity for completed, failed, cancelled, and interrupted review runs,
-  without prompts or reasoning.
+- A shared workflow-step inspector with validated results, readable reasoning summaries, and
+  reviewer-scoped activity for live and historical runs.
+- Live and persistent activity for completed, failed, cancelled, and interrupted review runs.
 - Clickable code locations, validated HTTPS references, and copy actions for a complete review or
   one finding.
 - Global model, reasoning, personal-style, and diagnostics settings plus repository-specific base,
@@ -100,8 +102,10 @@ stay in Electron's main process and are exposed to the interface through a narro
 Revy writes reviews and settings to Electron's platform-specific application-data directory—not to
 the selected repository—and keeps rotating technical logs in Electron's logs directory.
 
-Agent activity and diagnostics exclude prompts, user stories, reasoning, tool arguments, command
-output, and repository contents. Revy does not upload its application data or logs.
+Step evidence may contain validated structured results and readable model-generated reasoning
+summaries. Revy still discards prompts, user stories, raw reasoning, tool arguments, tool results,
+command output, and repository contents; diagnostics contain neither step results nor reasoning
+summaries. Revy does not upload its application data or logs.
 
 See [Architecture](docs/architecture.md) for the full app flow, workflow execution model, technology
 map, security boundary, and file-by-file storage layout.
@@ -115,7 +119,7 @@ map, security boundary, and file-by-file storage layout.
 
 Codex App Server is an experimental external dependency. Revy does not install, update,
 authenticate, or modify the configuration of Codex. See the
-[official App Server documentation](https://developers.openai.com/codex/app-server).
+[official App Server documentation](https://learn.chatgpt.com/docs/app-server).
 
 ## Development
 

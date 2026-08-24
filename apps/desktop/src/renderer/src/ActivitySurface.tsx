@@ -21,6 +21,7 @@ import type {
   ReviewRunStatus,
   ReviewRunSummary,
 } from '../../shared/contracts.js'
+import { coordinatorReviewStepId } from '../../shared/contracts.js'
 import {
   resolveConsolidationStatus,
   resolveWorkflowGraphReviewers,
@@ -104,7 +105,15 @@ function ActivityIcon({ entry }: { entry: AgentActivityEntry }) {
   return <Bot className={className} />
 }
 
-function ActivityEntry({ entry }: { entry: AgentActivityEntry }) {
+function ActivityEntry({
+  entry,
+  onInspect,
+  selected,
+}: {
+  entry: AgentActivityEntry
+  onInspect: (entry: AgentActivityEntry) => void
+  selected: boolean
+}) {
   const hasDetails =
     Boolean(entry.name) ||
     Boolean(entry.reviewer) ||
@@ -117,13 +126,31 @@ function ActivityEntry({ entry }: { entry: AgentActivityEntry }) {
       <span className="relative z-10 flex size-8 items-center justify-center rounded-full border bg-card">
         <ActivityIcon entry={entry} />
       </span>
-      <div className="min-w-0 pt-1">
+      <div className={`min-w-0 rounded-lg pt-1 ${selected ? 'ring-2 ring-primary/60' : ''}`}>
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
-            <p className="text-sm font-medium">{entry.title}</p>
+            {entry.stepId ? (
+              <button
+                className="text-left text-sm font-medium transition-colors hover:text-primary"
+                onClick={() => onInspect(entry)}
+                type="button"
+              >
+                {entry.title}
+              </button>
+            ) : (
+              <p className="text-sm font-medium">{entry.title}</p>
+            )}
             <p className="mt-1 text-xs text-muted-foreground">{formatDate(entry.occurredAt)}</p>
           </div>
-          <Badge variant="outline">{entry.status}</Badge>
+          <div className="flex flex-wrap justify-end gap-1.5">
+            {entry.stepId && (
+              <Badge variant="secondary">
+                {entry.reviewer?.name ??
+                  (entry.stepId === coordinatorReviewStepId ? 'Coordinator' : 'Review step')}
+              </Badge>
+            )}
+            <Badge variant="outline">{entry.status}</Badge>
+          </div>
         </div>
         {hasDetails && (
           <details className="mt-3 rounded-lg border bg-muted/15 px-3 py-2 text-xs">
@@ -183,7 +210,10 @@ interface ActivitySurfaceProps {
   onDelete: (id: string) => void
   onOpen: (id: string) => void
   onOpenReview: (id: string) => void
+  onInspectStep: (run: ReviewRun, stepId: string, tab: 'activity', activityId?: string) => void
   runs: ReviewRunSummary[]
+  selectedActivityId: string | null
+  selectedStepId: string | null
 }
 
 export function ActivitySurface({
@@ -191,10 +221,13 @@ export function ActivitySurface({
   onDelete,
   onOpen,
   onOpenReview,
+  onInspectStep,
   runs,
+  selectedActivityId,
+  selectedStepId,
 }: ActivitySurfaceProps) {
   const graphReviewers = activity
-    ? resolveWorkflowGraphReviewers(activity.metadata.reviewPlan, activity.activity)
+    ? resolveWorkflowGraphReviewers(activity.metadata.reviewPlan, activity.activity, activity.steps)
     : []
   return (
     <div className="grid h-full min-h-0 min-w-0 grid-cols-[19rem_minmax(0,1fr)]">
@@ -256,7 +289,8 @@ export function ActivitySurface({
               <History className="mx-auto mb-3 size-8 text-muted-foreground/60" />
               <p className="font-medium">Select a review run</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                Activity records actions and outcomes without prompts, reasoning, or command output.
+                Activity records safe actions and outcomes. Step details add validated results and
+                readable reasoning summaries.
               </p>
             </div>
           </div>
@@ -314,8 +348,11 @@ export function ActivitySurface({
                   consolidationStatus={resolveConsolidationStatus(
                     activity.metadata.status,
                     graphReviewers,
+                    activity.steps.find((step) => step.id === coordinatorReviewStepId),
                   )}
+                  onStepClick={(stepId) => onInspectStep(activity, stepId, 'activity')}
                   reviewers={graphReviewers}
+                  selectedStepId={selectedStepId}
                 />
               </div>
             </header>
@@ -325,7 +362,16 @@ export function ActivitySurface({
             ) : (
               <ol>
                 {activity.activity.map((entry) => (
-                  <ActivityEntry entry={entry} key={entry.id} />
+                  <ActivityEntry
+                    entry={entry}
+                    key={entry.id}
+                    onInspect={(selectedEntry) => {
+                      if (selectedEntry.stepId) {
+                        onInspectStep(activity, selectedEntry.stepId, 'activity', selectedEntry.id)
+                      }
+                    }}
+                    selected={selectedActivityId === entry.id}
+                  />
                 ))}
               </ol>
             )}

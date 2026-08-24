@@ -13,6 +13,7 @@ import type {
   ReviewRun,
   ReviewRunMetadata,
   ReviewRunSummary,
+  ReviewStepDetail,
   ReviewSummary,
   ReviewWorkflow,
   StructuredReview,
@@ -26,6 +27,7 @@ import {
   reviewerProfileSchema,
   reviewMetadataSchema,
   reviewRunMetadataSchema,
+  reviewStepDetailSchema,
   reviewWorkflowSchema,
   structuredReviewSchema,
 } from '../shared/contracts.js'
@@ -172,6 +174,31 @@ async function readActivity(path: string): Promise<AgentActivityEntry[]> {
   return [...entries.values()].sort((left, right) => left.sequence - right.sequence)
 }
 
+async function readSteps(path: string): Promise<ReviewStepDetail[]> {
+  let content: string
+  try {
+    content = await readFile(path, 'utf8')
+  } catch {
+    return []
+  }
+
+  const steps = new Map<string, ReviewStepDetail>()
+  for (const line of content.split('\n')) {
+    if (!line.trim()) {
+      continue
+    }
+    try {
+      const parsed = reviewStepDetailSchema.safeParse(JSON.parse(line) as unknown)
+      if (parsed.success) {
+        steps.set(parsed.data.id, parsed.data)
+      }
+    } catch {
+      // Ignore a partial final line left by an interrupted append.
+    }
+  }
+  return [...steps.values()]
+}
+
 function isActiveRun(status: ReviewRunMetadata['status']): boolean {
   return status === 'preparing' || status === 'running' || status === 'saving'
 }
@@ -297,6 +324,7 @@ export class AppStore {
     await mkdir(directory, { recursive: true })
     await writeJsonAtomic(join(directory, 'metadata.json'), validated)
     await writeFile(join(directory, 'activity.jsonl'), '', { encoding: 'utf8', flag: 'wx' })
+    await writeFile(join(directory, 'steps.jsonl'), '', { encoding: 'utf8', flag: 'wx' })
     logger.info('Review run created', { runId: validated.id })
     logger.debug('Review run repository', { repositoryRoot: validated.repositoryRoot })
     return validated
@@ -321,6 +349,24 @@ export class AppStore {
     }
     await appendFile(
       join(this.runDirectory(repositoryRoot, validated.runId), 'activity.jsonl'),
+      `${JSON.stringify(validated)}\n`,
+      'utf8',
+    )
+    return validated
+  }
+
+  async appendRunStep(
+    repositoryRoot: string,
+    runId: string,
+    step: ReviewStepDetail,
+  ): Promise<ReviewStepDetail> {
+    const validated = reviewStepDetailSchema.parse(step)
+    const metadata = await this.readRunMetadata(repositoryRoot, runId)
+    if (metadata.repositoryRoot !== repositoryRoot) {
+      throw new Error('The review run does not belong to this repository.')
+    }
+    await appendFile(
+      join(this.runDirectory(repositoryRoot, runId), 'steps.jsonl'),
       `${JSON.stringify(validated)}\n`,
       'utf8',
     )
@@ -360,6 +406,7 @@ export class AppStore {
         join(this.runDirectory(repositoryRoot, runId), 'activity.jsonl'),
       ),
       metadata,
+      steps: await readSteps(join(this.runDirectory(repositoryRoot, runId), 'steps.jsonl')),
     }
   }
 
@@ -564,6 +611,7 @@ export class AppStore {
           runId: metadata.id,
           sequence: (activity.at(-1)?.sequence ?? -1) + 1,
           status: reviewExists ? 'completed' : 'interrupted',
+          stepId: null,
           title: reviewExists
             ? 'Review completed before Revy closed.'
             : 'Review interrupted when Revy closed.',

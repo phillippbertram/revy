@@ -23,7 +23,8 @@
     "react-markdown": "catalog:",
     "remark-gfm": "catalog:",
     "simple-git": "catalog:",
-    "zod": "catalog:"
+    "zod": "catalog:",
+    "zustand": "catalog:"
   },
   "devDependencies": {
     "@revy/typescript-config": "workspace:*",

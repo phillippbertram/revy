@@ -18,12 +18,12 @@ produces a few architectural constraints:
   write configuration into the selected repository.
 - **Visible orchestration:** the chosen reviewers, execution state, partial coverage, and final
   consolidation remain understandable to the user.
-- **Local ownership:** review records, preferences, activity, and diagnostics stay in
+- **Local ownership:** review records, per-step evidence, preferences, activity, and diagnostics stay in
   platform-specific Revy directories.
 - **Defence in depth:** the renderer never receives arbitrary filesystem, Git, subprocess, or
   navigation capabilities.
-- **Durable evidence:** every attempt has an activity record; every successful result snapshots the
-  repository fingerprint and exact review plan used at that time.
+- **Durable evidence:** every attempt has activity and step records; every successful result
+  snapshots the repository fingerprint and exact review plan used at that time.
 
 ## System at a glance
 
@@ -42,7 +42,7 @@ flowchart LR
     repository -->|working directory| git
     git -->|refs, status, and diffs| revy
     revy -->|read-only review sessions| codex
-    codex -->|structured findings and safe activity| revy
+    codex -->|validated findings, summaries,<br/>and safe activity| revy
     revy -->|atomic records and rotating logs| storage
     revy -->|user-triggered copy| destination
 
@@ -59,12 +59,13 @@ repository and decides what to do with every finding.
 | Desktop runtime | Electron | Native windows and dialogs, process isolation, application paths, clipboard, and safe external links |
 | Application code | TypeScript with strict settings | Shared contracts and process-specific implementation |
 | Interface | React | Overview, live workflow, review history, activity, source preview, and settings |
+| Interface state | Zustand | Transient renderer state and atomic cross-surface updates |
 | Styling and components | Tailwind CSS, shadcn, and Radix UI | Themeable, accessible product UI and reusable primitives |
 | Workflow visualization | `@xyflow/react` | Fixed reviewer maps, batching, live states, pan, zoom, and fit controls |
 | Runtime validation | Zod | IPC inputs, persisted records, generated-protocol projections, and structured findings |
 | Git inspection | `simple-git` plus system Git | Canonical roots, refs, merge bases, status, and changed-file discovery |
 | Review backend | Codex App Server over JSONL stdio | Model discovery and read-only single- or multi-reviewer runs |
-| Persistence | JSON, JSONL, and Markdown files | Atomic configuration and review records plus append-only activity |
+| Persistence | JSON, JSONL, and Markdown files | Atomic configuration and review records plus append-only activity and step evidence |
 | Diagnostics | `electron-log` | Scoped local logging with bounded rotation and a privacy filter |
 | Build and workspace | pnpm, electron-vite, Vite, and Biome | Strict dependency catalog, desktop builds, type checking, formatting, and linting |
 
@@ -77,7 +78,7 @@ versioned through their schemas, and sufficient for the current single-user desk
 flowchart TB
     subgraph Renderer[Sandboxed renderer]
         ui[React interface]
-        viewState[Transient view state]
+        viewState[Zustand<br/>transient view state]
     end
 
     subgraph Preload[Sandboxed preload]
@@ -123,9 +124,9 @@ generic filesystem API.
   roots, refs, merge bases, and status. It never accepts a command from the renderer.
 - `src/main/codex-app-server.ts` implements the desktop-local `ReviewBackend`, owns the coordinator
   App Server and bounded reviewer App Servers, and projects the required protocol events into safe
-  activity.
+  activity, readable reasoning summaries, and validated results.
 - `src/main/storage.ts` owns atomic settings, repository preferences, recents, reviews, and
-  append-only run activity.
+  append-only run activity and step evidence.
 - `src/main/logger.ts` owns scoped, rotating, local-only diagnostics and their privacy boundary.
 - `src/main/source-service.ts` resolves code references and project instruction files inside the
   canonical repository root.
@@ -153,8 +154,8 @@ The main interface has four stable areas:
 | Surface | What the user does there | Data source |
 | --- | --- | --- |
 | **Overview** | Opens a repository, confirms scope, chooses a base, workflow, project instructions, optional reviewers, and user story, then starts the review | Fresh Git snapshot plus repository preferences |
-| **Reviews** | Follows the active workflow or reads immutable results, source locations, coverage, and story context | Saved reviews plus transient live progress |
-| **Activity** | Inspects every run attempt, including failed, cancelled, and interrupted runs | Run metadata plus privacy-filtered JSONL activity |
+| **Reviews** | Follows the active workflow or reads immutable results, source locations, coverage, story context, and per-step evidence | Saved reviews plus their linked runs and transient live progress |
+| **Activity** | Inspects every run attempt and opens reviewer-scoped details, including failed, cancelled, and interrupted runs | Run metadata plus privacy-filtered JSONL activity and step evidence |
 | **Settings** | Selects Codex, model, reasoning, personal style, diagnostics, reviewer profiles, and workflows | Global settings plus custom configuration records |
 
 ```mermaid
@@ -173,7 +174,7 @@ flowchart TD
     changes -- yes --> configure[Confirm base and choose workflow,<br/>instructions, optional reviewers, and story]
     configure --> plan[Resolve and freeze the review plan]
     plan --> run[Create run record and start Codex]
-    run --> live[Show live workflow and filtered activity]
+    run --> live[Show live workflow, step inspector,<br/>and filtered activity]
     live --> outcome{Run outcome}
     outcome -- cancelled or failed --> activity[Keep the attempt in Activity]
     outcome -- completed --> save[Validate result and save review]
@@ -271,8 +272,9 @@ global model and reasoning effort through its resolved profile.
 The final coordinator owns the global model, reasoning effort, project rules, optional user story,
 and personal style. For workflow runs it receives only validated structured specialist results,
 treats them as untrusted evidence, verifies them against the repository, and produces the normal
-`structured-v1` review. Reviewer prompts and raw responses are never added to activity or
-diagnostics.
+`structured-v1` review. Specialist results remain independently inspectable evidence and may
+therefore differ from the consolidated review. Reviewer prompts and raw responses are never added
+to activity, step evidence, or diagnostics.
 
 The bound Codex version discovers custom agent files only in personal or project-scoped Codex
 directories. Revy intentionally writes to neither location. The backend therefore uses app-owned
@@ -313,10 +315,20 @@ context is saved only with a successful review, not in activity.
 
 ### Result and failure semantics
 
-Every attempt creates a repository-scoped run record before Codex starts. The UI receives curated
-lifecycle, command, tool, search, subagent, and warning metadata while prompts, reasoning, tool
-arguments, patches, and command output stay out of activity. Started and completed updates for one
-action resolve to one timeline entry.
+Every attempt creates a repository-scoped run record and one step record for each reviewer plus the
+coordinator before Codex starts. Selected reviewers remain `pending` until their own turn starts;
+the coordinator remains `pending` until consolidation, or starts directly for Standard Review.
+The UI receives curated lifecycle, command, tool, search, subagent, and warning metadata with a
+nullable step identifier. Started and completed updates for one action resolve to one timeline
+entry.
+
+For each executing step, Revy requests a detailed readable reasoning summary. It streams
+`summaryTextDelta` into the live inspector and treats the completed reasoning item as authoritative.
+Only completed summary items and terminal step transitions are appended to storage, so an
+interrupted final fragment may be absent. Summary text is bounded and visibly marked when
+truncated. Raw reasoning, prompts, tool arguments, tool results, patches, and command output are
+discarded and never cross into the renderer or logs. Structured output becomes step evidence only
+after `structured-v1` validation succeeds; partial JSON is neither displayed nor persisted.
 
 - A required reviewer failure ends the run as `failed`; no review is saved.
 - A selected optional reviewer failure still allows consolidation and stores
@@ -330,7 +342,9 @@ The main process accepts `exitedReviewMode` text only when it contains a valid v
 object. A single outer JSON fence is tolerated. Valid findings require a P0–P3 priority, concise
 Markdown body, and at least one repository-relative code location. The structured record is
 authoritative; Revy derives portable Markdown for GitHub and GitLab copy actions. Deleting a
-completed run or review removes both linked records, while unsuccessful runs have activity only.
+completed run or review removes both linked records. Historical reviews load their linked run on
+demand rather than copying step evidence into the review record. Older runs without step data stay
+readable and use their frozen plan plus any existing activity as a compatibility view.
 
 Codex App Server is experimental and external. Revy feature-probes initialization, account, and
 model discovery, validates the consumed event subset, and reports incompatible methods or
@@ -362,7 +376,7 @@ flowchart LR
     global[Global settings] --> settings[settings.json]
     custom[Custom reviewers<br/>and workflows] --> profiles[reviewer-profiles<br/>review-workflows]
     choice[Repository choices] --> preferences[repository preferences]
-    attempt[Every run attempt] --> runs[run metadata<br/>and activity.jsonl]
+    attempt[Every run attempt] --> runs[run metadata,<br/>activity.jsonl, and steps.jsonl]
     success[Successful result] --> reviews[context, metadata,<br/>review.json, review.md]
     diagnostics[Application diagnostics] --> logFile[main.log]
 
@@ -393,7 +407,8 @@ repositories/<sha256-of-canonical-root>/
 │   └── review.md
 └── runs/<uuid>/
     ├── metadata.json
-    └── activity.jsonl
+    ├── activity.jsonl
+    └── steps.jsonl
 ```
 
 | Record | Contents | Write strategy |
@@ -405,6 +420,7 @@ repositories/<sha256-of-canonical-root>/
 | `preferences.json` | Base branch, workflow, and one repository-relative instruction file | Atomic JSON scoped to one repository |
 | `runs/*/metadata.json` | Status, timestamps, fingerprint, resolved workflow snapshot, outcomes, and linked review ID | Atomic JSON updated at lifecycle boundaries |
 | `runs/*/activity.jsonl` | Ordered, privacy-filtered activity entries | Created before execution and appended immediately |
+| `runs/*/steps.jsonl` | Execution state, bounded reasoning summaries, errors, and validated result for every reviewer and coordinator step | Append-only snapshots merged by step ID when read |
 | `reviews/*/context.json` | Normalized one-run user story | Atomic JSON written only for successful reviews |
 | `reviews/*/metadata.json` | Branch, base, fingerprint, model, instruction sources, and final plan | Atomic JSON |
 | `reviews/*/review.json` | Authoritative versioned structured result | Atomic, schema-validated JSON |
@@ -418,8 +434,10 @@ as Standard Review, and a missing `context.json` is treated as empty context. Re
 without `review.json` remain readable as legacy Markdown.
 
 JSON records use write-then-rename replacement so readers do not observe partially written files.
-Activity uses append-only JSONL so an interrupted process still leaves an inspectable timeline.
-There is no database, migration runner, cloud synchronization, or repository-local Revy directory.
+Activity and step evidence use append-only JSONL so an interrupted process still leaves inspectable
+records. The last valid entry for each activity sequence or step ID is authoritative; malformed or
+partial final lines are ignored. There is no database, migration runner, cloud synchronization, or
+repository-local Revy directory.
 
 Workflow diagram layout, animation, batch selection, unsaved settings drafts, and transient review
 progress are renderer state. They are never persisted or sent to Codex.
@@ -428,8 +446,9 @@ progress are renderer state. They are never persisted or sent to Codex.
 
 Diagnostics use `electron-log` in the main process. `main.log` rotates at 5 MiB to one archive;
 normal logging starts at `info`, while the persisted setting enables `debug`. Debug may include
-local paths and stack traces, but logs never include repository contents, prompts, reasoning, raw
-App Server messages, user stories, tool arguments, or command output. Revy does not upload logs.
+local paths and stack traces, but logs never include repository contents, prompts, readable
+reasoning summaries, raw reasoning, structured step results, raw App Server messages, user stories,
+tool arguments, tool results, or command output. Revy does not upload logs.
 
 ## Code-reference security
 
@@ -454,10 +473,12 @@ renderer argument is parsed through a strict Zod schema in the main process. Git
 filesystem APIs, subprocess handles, raw App Server events, and internal reasoning are never
 exposed to the renderer.
 
-Activity IPC carries only validated Revy records. Opening the log directory is a pathless
-main-process action, and renderer diagnostics accept only bounded error metadata. Clipboard writes
-are bounded text operations. External references must be absolute HTTPS URLs and are opened by the
-main process in the system browser; the renderer never receives general navigation capability.
+Activity IPC carries only validated Revy records. Step updates add bounded readable reasoning
+summaries and structured results only after projection into explicit Revy schemas; raw reasoning
+and intermediate output remain discarded. Opening the log directory is a pathless main-process
+action, and renderer diagnostics accept only bounded error metadata. Clipboard writes are bounded
+text operations. External references must be absolute HTTPS URLs and are opened by the main
+process in the system browser; the renderer never receives general navigation capability.
 
 Finding bodies and legacy reviews are rendered as GitHub-flavoured Markdown without raw HTML.
 Repository code references are handled as in-app actions. HTTPS links use the validated

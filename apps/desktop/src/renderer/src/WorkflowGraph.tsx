@@ -29,7 +29,9 @@ import type {
   ReviewerExecutionStatus,
   ReviewProgress,
   ReviewRunStatus,
+  ReviewStepDetail,
 } from '../../shared/contracts.js'
+import { coordinatorReviewStepId, reviewerReviewStepId } from '../../shared/contracts.js'
 
 export interface WorkflowGraphReviewer {
   description: string
@@ -47,9 +49,12 @@ type WorkflowNodeData = {
   kind: 'consolidation' | 'reviewer'
   meta: string
   name: string
+  onActivate: (() => void) | null
   profileId: string | null
+  selected: boolean
   status: ReviewerExecutionStatus
   statusLabel: string
+  stepId: string
   targetHandleIds: string[]
 }
 
@@ -109,12 +114,23 @@ function WorkflowStepNode({ data }: NodeProps<WorkflowNode>) {
   const Icon = data.kind === 'consolidation' ? GitMerge : Bot
   return (
     <div
-      className={`nopan w-[13.5rem] rounded-xl border p-3.5 transition-colors ${statusClasses(
+      className={`nodrag nopan relative w-[13.5rem] rounded-xl border p-3.5 transition-colors ${statusClasses(
         data.status,
       )} ${data.status === 'running' ? 'animate-pulse' : ''} ${
         data.clickable ? 'cursor-pointer hover:border-primary/70 hover:bg-primary/10' : ''
-      }`}
+      } ${data.selected ? 'ring-2 ring-primary/70 ring-offset-2 ring-offset-background' : ''}`}
     >
+      {data.onActivate && (
+        <button
+          aria-label={`Open details for ${data.name}`}
+          className="nodrag nopan absolute inset-0 z-10 rounded-xl focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+          onClick={(event) => {
+            event.stopPropagation()
+            data.onActivate?.()
+          }}
+          type="button"
+        />
+      )}
       {data.kind === 'consolidation' &&
         data.targetHandleIds.map((handleId, index) => (
           <Handle
@@ -126,7 +142,7 @@ function WorkflowStepNode({ data }: NodeProps<WorkflowNode>) {
             type="target"
           />
         ))}
-      <div className="flex items-start gap-3">
+      <div className="pointer-events-none relative z-20 flex items-start gap-3">
         <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-current/15 bg-background/40">
           <Icon className="size-4" />
         </span>
@@ -161,6 +177,7 @@ function WorkflowStepNode({ data }: NodeProps<WorkflowNode>) {
 export function resolveWorkflowGraphReviewers(
   plan: ResolvedReviewPlan,
   activity: AgentActivityEntry[],
+  steps: ReviewStepDetail[] = [],
 ): WorkflowGraphReviewer[] {
   return plan.reviewers.map((reviewer) => {
     if (!reviewer.selected || reviewer.status === 'not-selected') {
@@ -168,6 +185,12 @@ export function resolveWorkflowGraphReviewers(
     }
     if (reviewer.status !== 'pending' && reviewer.status !== 'running') {
       return reviewer
+    }
+    const step = steps.find(
+      (candidate) => candidate.id === reviewerReviewStepId(reviewer.profileId),
+    )
+    if (step) {
+      return { ...reviewer, status: step.status }
     }
     const reviewerActivity = activity.filter(
       (entry) => entry.reviewer?.profileId === reviewer.profileId,
@@ -193,7 +216,11 @@ export function resolveWorkflowGraphReviewers(
 export function resolveConsolidationStatus(
   runStatus: ReviewProgress['state'] | ReviewRunStatus,
   reviewers: WorkflowGraphReviewer[],
+  coordinatorStep?: ReviewStepDetail,
 ): ReviewerExecutionStatus {
+  if (coordinatorStep) {
+    return coordinatorStep.status
+  }
   if (runStatus === 'completed' || runStatus === 'completed-with-warnings') {
     return 'completed'
   }
@@ -222,8 +249,10 @@ export function resolveConsolidationStatus(
 interface WorkflowGraphProps {
   consolidationStatus: ReviewerExecutionStatus
   consolidationStatusLabel?: string
-  onReviewerClick?: (profileId: string) => void
+  onReviewerClick?: ((profileId: string) => void) | undefined
+  onStepClick?: ((stepId: string) => void) | undefined
   reviewers: WorkflowGraphReviewer[]
+  selectedStepId?: string | null
   standardReview?: boolean
 }
 
@@ -231,12 +260,26 @@ export function WorkflowGraph({
   consolidationStatus,
   consolidationStatusLabel,
   onReviewerClick,
+  onStepClick,
   reviewers,
+  selectedStepId,
   standardReview,
 }: WorkflowGraphProps) {
   const batchSize = 4
-  const batchCount = Math.max(1, Math.ceil(reviewers.length / batchSize))
-  const runningReviewerIndex = reviewers.findIndex((reviewer) => reviewer.status === 'running')
+  const reviewerSnapshotKey = JSON.stringify(reviewers)
+  const reviewerSnapshotRef = useRef({ key: reviewerSnapshotKey, reviewers })
+  if (reviewerSnapshotRef.current.key !== reviewerSnapshotKey) {
+    reviewerSnapshotRef.current = { key: reviewerSnapshotKey, reviewers }
+  }
+  const graphReviewers = reviewerSnapshotRef.current.reviewers
+  const onReviewerClickRef = useRef(onReviewerClick)
+  const onStepClickRef = useRef(onStepClick)
+  onReviewerClickRef.current = onReviewerClick
+  onStepClickRef.current = onStepClick
+  const reviewersClickable = Boolean(onReviewerClick || onStepClick)
+  const coordinatorClickable = Boolean(onStepClick)
+  const batchCount = Math.max(1, Math.ceil(graphReviewers.length / batchSize))
+  const runningReviewerIndex = graphReviewers.findIndex((reviewer) => reviewer.status === 'running')
   const runningBatch =
     runningReviewerIndex >= 0 ? Math.floor(runningReviewerIndex / batchSize) : null
   const [selectedBatch, setSelectedBatch] = useState(runningBatch ?? 0)
@@ -245,9 +288,9 @@ export function WorkflowGraph({
   )
   const canvasRef = useRef<HTMLDivElement>(null)
   const currentBatch = Math.min(selectedBatch, batchCount - 1)
-  const visibleReviewers = reviewers.slice(
-    currentBatch * batchSize,
-    currentBatch * batchSize + batchSize,
+  const visibleReviewers = useMemo(
+    () => graphReviewers.slice(currentBatch * batchSize, currentBatch * batchSize + batchSize),
+    [currentBatch, graphReviewers],
   )
   const visibleReviewerKey = visibleReviewers.map((reviewer) => reviewer.profileId).join(':')
 
@@ -262,56 +305,71 @@ export function WorkflowGraph({
   }, [runningBatch])
 
   const { edges, height, nodes } = useMemo(() => {
-    const isStandardReview = standardReview ?? reviewers.length === 0
+    const isStandardReview = standardReview ?? graphReviewers.length === 0
     const horizontalGap = 288
     const reviewerWidth = Math.max(0, (visibleReviewers.length - 1) * horizontalGap)
     const targetHandleIds = visibleReviewers.map((reviewer) => `target:${reviewer.profileId}`)
     const nextNodes: WorkflowNode[] = visibleReviewers.map((reviewer, index) => {
       return {
-        ariaRole: onReviewerClick ? 'button' : 'group',
         className: 'nopan',
         data: {
-          clickable: Boolean(onReviewerClick),
+          clickable: reviewersClickable,
           description: reviewer.description,
           kind: 'reviewer',
           meta: reviewer.required ? 'Required reviewer' : 'Optional reviewer',
           name: reviewer.name,
+          onActivate: reviewersClickable
+            ? () => {
+                const reviewerHandler = onReviewerClickRef.current
+                if (reviewerHandler) {
+                  reviewerHandler(reviewer.profileId)
+                  return
+                }
+                onStepClickRef.current?.(reviewerReviewStepId(reviewer.profileId))
+              }
+            : null,
           profileId: reviewer.profileId,
+          selected: selectedStepId === reviewerReviewStepId(reviewer.profileId),
           status: reviewer.status,
           statusLabel: reviewer.statusLabel ?? formatStatus(reviewer.status),
+          stepId: reviewerReviewStepId(reviewer.profileId),
           targetHandleIds: [],
         },
         deletable: false,
         draggable: false,
-        focusable: Boolean(onReviewerClick),
+        focusable: false,
         id: `reviewer:${reviewer.profileId}`,
         position: { x: index * horizontalGap - reviewerWidth / 2, y: 0 },
-        selectable: Boolean(onReviewerClick),
+        selectable: false,
         type: 'workflowStep',
       }
     })
     const consolidationId = 'consolidation'
     nextNodes.push({
-      ariaRole: 'group',
       className: 'nopan',
       data: {
-        clickable: false,
+        clickable: coordinatorClickable,
         description: isStandardReview
           ? 'Runs the existing single-agent review and produces the final structured result.'
           : 'Combines the selected specialist results into the final structured review.',
         kind: 'consolidation',
         meta: isStandardReview ? 'Built-in single-agent workflow' : 'Fixed final step',
         name: isStandardReview ? 'Standard Review' : 'Consolidated Review',
+        onActivate: coordinatorClickable
+          ? () => onStepClickRef.current?.(coordinatorReviewStepId)
+          : null,
         profileId: null,
+        selected: selectedStepId === coordinatorReviewStepId,
         status: consolidationStatus,
         statusLabel: consolidationStatusLabel ?? formatStatus(consolidationStatus),
+        stepId: coordinatorReviewStepId,
         targetHandleIds,
       },
       deletable: false,
       draggable: false,
       focusable: false,
       id: consolidationId,
-      position: { x: 0, y: reviewers.length > 0 ? 245 : 20 },
+      position: { x: 0, y: graphReviewers.length > 0 ? 245 : 20 },
       selectable: false,
       type: 'workflowStep',
     })
@@ -342,14 +400,16 @@ export function WorkflowGraph({
     })
     return {
       edges: nextEdges,
-      height: reviewers.length === 0 ? 250 : 410,
+      height: graphReviewers.length === 0 ? 250 : 410,
       nodes: nextNodes,
     }
   }, [
     consolidationStatus,
     consolidationStatusLabel,
-    onReviewerClick,
-    reviewers.length,
+    coordinatorClickable,
+    graphReviewers.length,
+    reviewersClickable,
+    selectedStepId,
     standardReview,
     visibleReviewers,
   ])
@@ -368,11 +428,44 @@ export function WorkflowGraph({
     if (!flowInstance || !canvasRef.current) {
       return
     }
+    let frame: number | null = null
+    let lastHeight = -1
+    let lastWidth = -1
+    const fitVisibleCanvas = (): void => {
+      const canvas = canvasRef.current
+      if (!canvas) {
+        return
+      }
+      const bounds = canvas.getBoundingClientRect()
+      const nextHeight = Math.round(bounds.height)
+      const nextWidth = Math.round(bounds.width)
+      if (nextHeight < 64 || nextWidth < 64) {
+        return
+      }
+      if (nextHeight === lastHeight && nextWidth === lastWidth) {
+        return
+      }
+      lastHeight = nextHeight
+      lastWidth = nextWidth
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame)
+      }
+      frame = window.requestAnimationFrame(() => {
+        frame = null
+        void flowInstance.fitView({ maxZoom: 1, padding: 0.18 })
+      })
+    }
     const observer = new ResizeObserver(() => {
-      void flowInstance.fitView({ duration: 150, maxZoom: 1, padding: 0.18 })
+      fitVisibleCanvas()
     })
     observer.observe(canvasRef.current)
-    return () => observer.disconnect()
+    fitVisibleCanvas()
+    return () => {
+      observer.disconnect()
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame)
+      }
+    }
   }, [flowInstance])
 
   return (
@@ -381,7 +474,8 @@ export function WorkflowGraph({
         <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-muted/15 px-3 py-2">
           <p className="text-xs text-muted-foreground">
             Reviewers {currentBatch * batchSize + 1}–
-            {Math.min((currentBatch + 1) * batchSize, reviewers.length)} of {reviewers.length}
+            {Math.min((currentBatch + 1) * batchSize, graphReviewers.length)} of{' '}
+            {graphReviewers.length}
             <span className="mx-2 opacity-50">·</span>
             Batch {currentBatch + 1} of {batchCount}
           </p>
@@ -412,7 +506,7 @@ export function WorkflowGraph({
           colorMode="dark"
           edges={edges}
           edgesFocusable={false}
-          elementsSelectable={Boolean(onReviewerClick)}
+          elementsSelectable={false}
           fitView
           fitViewOptions={{ maxZoom: 1, padding: 0.18 }}
           maxZoom={1.25}
@@ -420,14 +514,10 @@ export function WorkflowGraph({
           nodes={nodes}
           nodesConnectable={false}
           nodesDraggable={false}
-          nodesFocusable={Boolean(onReviewerClick)}
+          nodesFocusable={false}
           nodeTypes={nodeTypes}
           onInit={setFlowInstance}
-          onNodeClick={(_, node) => {
-            if (node.data.profileId) {
-              onReviewerClick?.(node.data.profileId)
-            }
-          }}
+          onNodeClick={(_, node) => node.data.onActivate?.()}
           panOnDrag
           preventScrolling={false}
           zoomOnDoubleClick={false}

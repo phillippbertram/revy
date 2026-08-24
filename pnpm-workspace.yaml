@@ -29,6 +29,7 @@ catalog:
   typescript: "7.0.2"
   vite: "7.3.6"
   zod: "4.4.3"
+  zustand: "5.0.15"
 
 catalogMode: strict
 

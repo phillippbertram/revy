@@ -432,6 +432,40 @@ export const reviewRunStatusSchema = z.enum([
 ])
 export type ReviewRunStatus = z.infer<typeof reviewRunStatusSchema>
 
+export const coordinatorReviewStepId = 'coordinator'
+
+export function reviewerReviewStepId(profileId: string): string {
+  return `reviewer:${profileId}`
+}
+
+export const reviewStepKindSchema = z.enum(['coordinator', 'reviewer'])
+export type ReviewStepKind = z.infer<typeof reviewStepKindSchema>
+
+export const reviewStepReasoningSummarySchema = z
+  .object({
+    id: z.string().min(1).max(256),
+    occurredAt: z.iso.datetime(),
+    text: z.string().min(1).max(100_000),
+  })
+  .strict()
+export type ReviewStepReasoningSummary = z.infer<typeof reviewStepReasoningSummarySchema>
+
+export const reviewStepDetailSchema = z
+  .object({
+    endedAt: z.iso.datetime().nullable(),
+    error: z.string().min(1).max(2_000).nullable(),
+    id: z.string().min(1).max(256),
+    kind: reviewStepKindSchema,
+    output: structuredReviewSchema.nullable(),
+    profileId: z.uuid().nullable(),
+    reasoningSummaries: z.array(reviewStepReasoningSummarySchema).max(128),
+    reasoningTruncated: z.boolean(),
+    startedAt: z.iso.datetime().nullable(),
+    status: reviewerExecutionStatusSchema,
+  })
+  .strict()
+export type ReviewStepDetail = z.infer<typeof reviewStepDetailSchema>
+
 export const activityEntryStatusSchema = z.enum([
   'in-progress',
   'completed',
@@ -474,6 +508,7 @@ export const agentActivityEntrySchema = z
     runId: z.uuid(),
     sequence: z.number().int().nonnegative(),
     status: activityEntryStatusSchema,
+    stepId: z.string().min(1).max(256).nullable().default(null),
     title: z.string().min(1).max(256),
   })
   .strict()
@@ -504,12 +539,20 @@ export const reviewRunSummarySchema = reviewRunMetadataSchema
 export type ReviewRunSummary = z.infer<typeof reviewRunSummarySchema>
 
 export const reviewRunSchema = z
-  .object({ activity: z.array(agentActivityEntrySchema), metadata: reviewRunMetadataSchema })
+  .object({
+    activity: z.array(agentActivityEntrySchema),
+    metadata: reviewRunMetadataSchema,
+    steps: z.array(reviewStepDetailSchema).default([]),
+  })
   .strict()
 export type ReviewRun = z.infer<typeof reviewRunSchema>
 
 export const reviewRunUpdateSchema = z
-  .object({ entry: agentActivityEntrySchema.nullable(), run: reviewRunSummarySchema })
+  .object({
+    entry: agentActivityEntrySchema.nullable(),
+    run: reviewRunSummarySchema,
+    step: reviewStepDetailSchema.nullable().default(null),
+  })
   .strict()
 export type ReviewRunUpdate = z.infer<typeof reviewRunUpdateSchema>
 

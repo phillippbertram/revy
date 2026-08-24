@@ -18,6 +18,7 @@ import type {
   ReviewRunStatus,
   ReviewRunSummary,
   ReviewRunUpdate,
+  ReviewStepDetail,
   ReviewSummary,
   SaveReviewerProfileInput,
   SaveReviewWorkflowInput,
@@ -27,6 +28,7 @@ import type {
   UpdateRepositoryPreferencesInput,
   UpdateSettingsInput,
 } from '../shared/contracts.js'
+import { coordinatorReviewStepId, reviewerReviewStepId } from '../shared/contracts.js'
 import { formatStructuredReviewMarkdown, parseStructuredReview } from '../shared/review-formats.js'
 import {
   isBuiltInReviewerId,
@@ -36,6 +38,7 @@ import {
 import {
   type BackendActivity,
   type BackendReviewerOutcome,
+  type BackendStepEvent,
   CodexAppServerBackend,
   RequiredReviewerFailure,
   type ReviewBackend,
@@ -174,6 +177,7 @@ interface ActiveRun {
   itemSequences: Map<string, number>
   metadata: ReviewRunMetadata
   nextSequence: number
+  steps: Map<string, ReviewStepDetail>
   writes: Promise<void>
 }
 
@@ -542,13 +546,43 @@ export class RevyService {
         status: 'preparing',
       }
       await this.store.createRun(runMetadata)
+      const initialSteps: ReviewStepDetail[] = [
+        ...resolvedPlan.reviewers.map((reviewer) => ({
+          endedAt: null,
+          error: null,
+          id: reviewerReviewStepId(reviewer.profileId),
+          kind: 'reviewer' as const,
+          output: null,
+          profileId: reviewer.profileId,
+          reasoningSummaries: [],
+          reasoningTruncated: false,
+          startedAt: null,
+          status: reviewer.selected ? ('pending' as const) : ('not-selected' as const),
+        })),
+        {
+          endedAt: null,
+          error: null,
+          id: coordinatorReviewStepId,
+          kind: 'coordinator',
+          output: null,
+          profileId: null,
+          reasoningSummaries: [],
+          reasoningTruncated: false,
+          startedAt: null,
+          status: 'pending',
+        },
+      ]
       this.activeRun = {
         itemSequences: new Map(),
         metadata: runMetadata,
         nextSequence: 0,
+        steps: new Map(initialSteps.map((step) => [step.id, step])),
         writes: Promise.resolve(),
       }
-      this.publishActivity({ entry: null, run: runMetadata })
+      this.publishActivity({ entry: null, run: runMetadata, step: null })
+      for (const step of initialSteps) {
+        await this.recordStep(step)
+      }
       const preparingActivityId = randomUUID()
       await this.recordLifecycle(
         'Preparing the repository snapshot.',
@@ -558,14 +592,7 @@ export class RevyService {
       await this.updateActiveRun('running')
       await this.recordLifecycle('Repository snapshot prepared.', 'completed', preparingActivityId)
 
-      const runningPlan: ResolvedReviewPlan = {
-        ...resolvedPlan,
-        reviewers: resolvedPlan.reviewers.map((reviewer) => ({
-          ...reviewer,
-          status: reviewer.selected ? 'running' : 'not-selected',
-        })),
-      }
-      await this.updateActiveRun('running', { reviewPlan: runningPlan })
+      const runningPlan = resolvedPlan
       const selectedReviewers = runningPlan.reviewers.filter((reviewer) => reviewer.selected)
       const reviewerAgents: ReviewerAgentConfiguration[] = selectedReviewers.map((reviewer) => {
         const reviewerInstructions = resolvedExecution.instructions.get(reviewer.profileId)
@@ -597,6 +624,7 @@ export class RevyService {
           })
         },
         onProgress: (message) => this.emit('running', message, reviewId),
+        onStepEvent: (event) => this.handleStepEvent(event),
         prompt: buildReviewPrompt(
           repository,
           settings,
@@ -608,6 +636,7 @@ export class RevyService {
         reasoningEffort: settings.reasoningEffort,
         repositoryRoot: repository.root,
         reviewerAgents,
+        stepId: coordinatorReviewStepId,
       })
       this.emit('saving', 'Saving the completed review…', reviewId)
       const savingActivityId = randomUUID()
@@ -641,6 +670,14 @@ export class RevyService {
       } else {
         content = parseStructuredReview(result.markdown)
       }
+      await this.applyStepEvent({
+        error: null,
+        occurredAt: new Date().toISOString(),
+        output: content,
+        status: 'completed',
+        stepId: coordinatorReviewStepId,
+        type: 'result',
+      })
       const failedOptionalReviewers = finalPlan.reviewers.filter(
         (reviewer) => reviewer.selected && !reviewer.required && reviewer.status === 'failed',
       )
@@ -713,6 +750,17 @@ export class RevyService {
       const cancelled = /cancel/i.test(message)
       const status = cancelled ? 'cancelled' : 'failed'
       try {
+        const endedAt = new Date().toISOString()
+        for (const step of this.activeRun?.steps.values() ?? []) {
+          if (step.status === 'pending' || step.status === 'running') {
+            await this.recordStep({
+              ...step,
+              endedAt,
+              error: cancelled ? null : message.slice(0, 2_000),
+              status,
+            })
+          }
+        }
         const currentPlan = this.activeRun
           ? error instanceof RequiredReviewerFailure
             ? applyReviewerOutcomes(this.activeRun.metadata.reviewPlan, error.reviewerOutcomes)
@@ -732,7 +780,7 @@ export class RevyService {
         }
         await this.recordLifecycle(cancelled ? 'Review cancelled.' : 'Review failed.', status)
         await this.updateActiveRun(status, {
-          endedAt: new Date().toISOString(),
+          endedAt,
           error: cancelled
             ? null
             : 'The review failed. Open the log folder for diagnostic details.',
@@ -883,6 +931,77 @@ export class RevyService {
     this.publishProgress({ error, message, reviewId, state })
   }
 
+  private handleStepEvent(event: BackendStepEvent): void {
+    void this.applyStepEvent(event).catch((error: unknown) => {
+      logError('service', 'Could not record review step details', error)
+    })
+  }
+
+  private async applyStepEvent(event: BackendStepEvent): Promise<void> {
+    const current = this.activeRun?.steps.get(event.stepId)
+    if (!current) {
+      return
+    }
+    if (event.type === 'started') {
+      await this.recordStep({
+        ...current,
+        startedAt: current.startedAt ?? event.occurredAt,
+        status: 'running',
+      })
+      return
+    }
+    if (event.type === 'reasoning-summary') {
+      const nextSummary = {
+        id: event.id,
+        occurredAt: event.occurredAt,
+        text: event.text,
+      }
+      const existingIndex = current.reasoningSummaries.findIndex(
+        (summary) => summary.id === event.id,
+      )
+      const reasoningSummaries = [...current.reasoningSummaries]
+      const summaryLimitReached = existingIndex < 0 && reasoningSummaries.length >= 128
+      if (existingIndex >= 0) {
+        reasoningSummaries[existingIndex] = nextSummary
+      } else if (!summaryLimitReached) {
+        reasoningSummaries.push(nextSummary)
+      }
+      await this.recordStep(
+        {
+          ...current,
+          reasoningSummaries,
+          reasoningTruncated: current.reasoningTruncated || event.truncated || summaryLimitReached,
+        },
+        event.completed,
+      )
+      return
+    }
+    await this.recordStep({
+      ...current,
+      endedAt: event.occurredAt,
+      error: event.error,
+      output: event.output,
+      status: event.status,
+    })
+  }
+
+  private recordStep(step: ReviewStepDetail, persist = true): Promise<void> {
+    const run = this.activeRun
+    if (!run) {
+      return Promise.resolve()
+    }
+    run.steps.set(step.id, step)
+    if (!persist) {
+      this.publishActivity({ entry: null, run: run.metadata, step })
+      return Promise.resolve()
+    }
+    run.writes = run.writes.then(async () => {
+      await this.store.appendRunStep(run.metadata.repositoryRoot, run.metadata.id, step)
+      this.publishActivity({ entry: null, run: run.metadata, step })
+    })
+    return run.writes
+  }
+
   private recordActivity(activity: BackendActivity): Promise<void> {
     const run = this.activeRun
     if (!run) {
@@ -901,7 +1020,7 @@ export class RevyService {
     }
     run.writes = run.writes.then(async () => {
       await this.store.appendRunActivity(run.metadata.repositoryRoot, entry)
-      this.publishActivity({ entry, run: run.metadata })
+      this.publishActivity({ entry, run: run.metadata, step: null })
     })
     return run.writes
   }
@@ -920,6 +1039,7 @@ export class RevyService {
       occurredAt: new Date().toISOString(),
       paths: [],
       status,
+      stepId: null,
       title,
     })
   }
@@ -939,6 +1059,6 @@ export class RevyService {
     await this.flushActivity()
     run.metadata = { ...run.metadata, ...changes, status }
     await this.store.updateRun(run.metadata)
-    this.publishActivity({ entry: null, run: run.metadata })
+    this.publishActivity({ entry: null, run: run.metadata, step: null })
   }
 }
