@@ -11,6 +11,7 @@ export interface CodeReference {
 interface MarkdownReviewProps {
   markdown: string
   onCodeReference: (reference: CodeReference) => void
+  onExternalLink: (url: string) => void
 }
 
 function parseCodeReference(href: string | undefined): CodeReference | null {
@@ -43,32 +44,55 @@ function MarkdownLink({
   children,
   href,
   onCodeReference,
-}: ComponentPropsWithoutRef<'a'> & Pick<MarkdownReviewProps, 'onCodeReference'>) {
+  onExternalLink,
+}: ComponentPropsWithoutRef<'a'> &
+  Pick<MarkdownReviewProps, 'onCodeReference' | 'onExternalLink'>) {
   const reference = parseCodeReference(href)
-  if (!reference) {
+  if (reference) {
     return (
-      <span className="text-primary underline decoration-primary/40 underline-offset-4">
+      <button
+        className="inline rounded-sm font-mono text-[0.92em] text-primary underline decoration-primary/40 underline-offset-4 hover:decoration-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        onClick={() => onCodeReference(reference)}
+        type="button"
+      >
         {children}
-      </span>
+      </button>
     )
   }
+  try {
+    if (href && new URL(href).protocol === 'https:') {
+      return (
+        <button
+          className="inline rounded-sm text-primary underline decoration-primary/40 underline-offset-4 hover:decoration-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={() => onExternalLink(href)}
+          type="button"
+        >
+          {children}
+        </button>
+      )
+    }
+  } catch {
+    // Unsupported links remain visible without becoming navigation targets.
+  }
   return (
-    <button
-      className="inline rounded-sm font-mono text-[0.92em] text-primary underline decoration-primary/40 underline-offset-4 hover:decoration-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      onClick={() => onCodeReference(reference)}
-      type="button"
-    >
+    <span className="text-primary underline decoration-primary/40 underline-offset-4">
       {children}
-    </button>
+    </span>
   )
 }
 
-export function MarkdownReview({ markdown, onCodeReference }: MarkdownReviewProps) {
+export function MarkdownReview({ markdown, onCodeReference, onExternalLink }: MarkdownReviewProps) {
   return (
     <article className="review-markdown max-w-none text-[0.95rem] leading-7 text-foreground/90">
       <ReactMarkdown
         components={{
-          a: (props) => <MarkdownLink {...props} onCodeReference={onCodeReference} />,
+          a: (props) => (
+            <MarkdownLink
+              {...props}
+              onCodeReference={onCodeReference}
+              onExternalLink={onExternalLink}
+            />
+          ),
         }}
         remarkPlugins={[remarkGfm]}
         skipHtml

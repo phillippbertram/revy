@@ -2,7 +2,7 @@
 
 Shippy is a local Electron application for reviewing every change on the current Git branch before
 it ships. It combines committed branch changes with staged, unstaged, and untracked work, then asks
-an existing local Codex installation for a focused Markdown review.
+an existing local Codex installation for a focused, structured review.
 
 The MVP provides:
 
@@ -11,10 +11,12 @@ The MVP provides:
 - read-only change discovery through the system Git installation;
 - one cancellable Codex review at a time, using models and reasoning efforts discovered from Codex
   App Server;
-- immutable Markdown review history stored in Electron app data;
-- safe `shippy://code` links that open current working-tree files in a read-only source panel; and
-- global format, model, reasoning, and personal-style settings plus repository-specific review
-  instructions.
+- immutable structured review history with P0–P3 findings, summaries, and legacy Markdown support;
+- live and persistent agent activity for completed, failed, cancelled, and interrupted review runs;
+- clickable code locations, validated HTTPS references, and GitHub/GitLab-ready copy actions for a
+  complete review or one finding; and
+- global model, reasoning, and personal-style settings plus repository-specific review
+  instructions and local rotating diagnostics.
 
 ## Requirements
 
@@ -35,8 +37,7 @@ pnpm dev
 ```
 
 Open a repository, confirm its detected base branch, optionally choose a project review skill, and
-start the review. Completed reviews remain available after restart; cancelled and failed runs are
-not saved.
+start the review. Completed reviews and the activity of every run remain available after restart.
 
 | Command | Purpose |
 | --- | --- |
@@ -53,7 +54,8 @@ Automated tests are intentionally not part of this project.
 Repositories are treated as read-only. Git, filesystem, persistence, and Codex subprocess access
 stay in Electron's main process and are exposed through a narrow validated preload API. Reviews and
 settings are written below Electron's platform-specific `userData` directory, never inside the
-selected repository.
+selected repository. Technical logs rotate in Electron's platform-specific logs directory. Agent
+activity excludes prompts, reasoning, tool arguments, command output, and repository contents.
 
 See [Architecture](docs/architecture.md) for the canonical process, security, storage, and module
 boundaries.

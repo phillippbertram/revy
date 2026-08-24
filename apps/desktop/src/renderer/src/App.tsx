@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from '@shippy/ui/components/select'
 import { Separator } from '@shippy/ui/components/separator'
+import { Switch } from '@shippy/ui/components/switch'
 import { Textarea } from '@shippy/ui/components/textarea'
 import {
   AlertTriangle,
@@ -29,6 +30,7 @@ import {
   FolderGit2,
   FolderOpen,
   History,
+  ListTree,
   LoaderCircle,
   PanelRightClose,
   RefreshCw,
@@ -39,17 +41,24 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import type {
+  AgentActivityEntry,
   BootstrapState,
   RepositorySnapshot,
   Result,
   ReviewDocument,
   ReviewProgress,
+  ReviewRun,
+  ReviewRunSummary,
+  ReviewRunUpdate,
   ReviewSummary,
   SourcePreview,
 } from '../../shared/contracts.js'
+import { formatLegacyReviewMarkdown } from '../../shared/review-formats.js'
+import { ActivitySurface } from './ActivitySurface'
 import { type CodeReference, MarkdownReview } from './MarkdownReview'
+import { CopyButton, StructuredReview } from './StructuredReview'
 
-type Surface = 'repository' | 'reviews' | 'settings'
+type Surface = 'activity' | 'repository' | 'reviews' | 'settings'
 
 function unwrapResult<T>(result: Result<T>): T {
   if (!result.ok) {
@@ -67,6 +76,36 @@ function formatDate(value: string): string {
 
 function branchLabel(repository: RepositorySnapshot): string {
   return repository.branch ?? `Detached at ${repository.headSha?.slice(0, 8) ?? 'unborn'}`
+}
+
+function mergeActivityEntry(
+  activity: AgentActivityEntry[],
+  entry: AgentActivityEntry,
+): AgentActivityEntry[] {
+  const next = activity.filter((candidate) => candidate.id !== entry.id)
+  next.push(entry)
+  return next.sort((left, right) => left.sequence - right.sequence)
+}
+
+function mergeRunUpdate(current: ReviewRun, update: ReviewRunUpdate): ReviewRun {
+  return {
+    activity: update.entry ? mergeActivityEntry(current.activity, update.entry) : current.activity,
+    metadata: update.run,
+  }
+}
+
+function reportRendererError(
+  kind: 'error' | 'unhandled-rejection',
+  value: unknown,
+  fallback: string,
+): void {
+  const error = value instanceof Error ? value : null
+  const message = (error?.message || (typeof value === 'string' ? value : fallback)).slice(0, 4_000)
+  window.shippy.reportRendererError({
+    kind,
+    message: message || fallback,
+    stack: error?.stack?.slice(0, 16_000) || null,
+  })
 }
 
 function ErrorBanner({ error, onClose }: { error: string; onClose: () => void }) {
@@ -138,6 +177,7 @@ function Sidebar({ bootstrap, onOpenRecent, onSelectSurface, repository, surface
   const items: Array<{ icon: typeof FolderGit2; id: Surface; label: string }> = [
     { icon: FolderGit2, id: 'repository', label: 'Repository' },
     { icon: History, id: 'reviews', label: 'Reviews' },
+    { icon: ListTree, id: 'activity', label: 'Activity' },
     { icon: Settings2, id: 'settings', label: 'Settings' },
   ]
   return (
@@ -154,7 +194,7 @@ function Sidebar({ bootstrap, onOpenRecent, onSelectSurface, repository, surface
       <nav className="space-y-1 px-3 py-3">
         {items.map((item) => {
           const Icon = item.icon
-          const disabled = item.id === 'reviews' && !repository
+          const disabled = (item.id === 'reviews' || item.id === 'activity') && !repository
           return (
             <button
               className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
@@ -449,7 +489,9 @@ function RepositorySurface({
 }
 
 interface ReviewsSurfaceProps {
+  onCopy: (text: string) => Promise<boolean>
   onDelete: (id: string) => void
+  onOpenExternal: (url: string) => void
   onOpenReview: (id: string) => void
   onOpenSource: (reference: CodeReference) => void
   onCloseSource: () => void
@@ -460,7 +502,9 @@ interface ReviewsSurfaceProps {
 
 function ReviewsSurface({
   onCloseSource,
+  onCopy,
   onDelete,
+  onOpenExternal,
   onOpenReview,
   onOpenSource,
   review,
@@ -507,6 +551,20 @@ function ReviewsSurface({
                   {item.stale && <span className="size-1.5 rounded-full bg-amber-400" />}
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">against {item.baseBranch}</p>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {item.format === 'structured-v1' ? (
+                    <>
+                      <Badge variant="secondary">
+                        {item.findingCount} {item.findingCount === 1 ? 'finding' : 'findings'}
+                      </Badge>
+                      {item.highestPriority && (
+                        <Badge variant="outline">{item.highestPriority}</Badge>
+                      )}
+                    </>
+                  ) : (
+                    <Badge variant="outline">Legacy</Badge>
+                  )}
+                </div>
                 <p className="mt-2 flex items-center gap-1 text-[0.68rem] text-muted-foreground">
                   <Clock3 className="size-3" />
                   {formatDate(item.completedAt)}
@@ -532,13 +590,25 @@ function ReviewsSurface({
           <div className="mx-auto max-w-4xl px-8 py-8 lg:px-12">
             <div className="mb-6 flex items-center justify-between gap-4">
               <div className="flex flex-wrap gap-2">
-                <Badge variant="secondary">{review.metadata.format}</Badge>
+                <Badge variant="secondary">
+                  {review.content ? 'Structured review' : 'Legacy review'}
+                </Badge>
                 <Badge variant="outline">{review.metadata.model}</Badge>
               </div>
-              <Button onClick={() => onDelete(review.metadata.id)} size="sm" variant="ghost">
-                <Trash2 />
-                Delete
-              </Button>
+              <div className="flex items-center gap-2">
+                {!review.content && (
+                  <CopyButton
+                    label="Copy review"
+                    onCopy={onCopy}
+                    text={formatLegacyReviewMarkdown(review.markdown)}
+                    variant="outline"
+                  />
+                )}
+                <Button onClick={() => onDelete(review.metadata.id)} size="sm" variant="ghost">
+                  <Trash2 />
+                  Delete
+                </Button>
+              </div>
             </div>
             {review.stale && (
               <div className="mb-6 flex gap-3 rounded-xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm leading-6 text-amber-100">
@@ -546,7 +616,21 @@ function ReviewsSurface({
                 HEAD or the working tree changed after this review. Code links show current files.
               </div>
             )}
-            <MarkdownReview markdown={review.markdown} onCodeReference={onOpenSource} />
+            {review.content ? (
+              <StructuredReview
+                content={review.content}
+                markdown={review.markdown}
+                onCopy={onCopy}
+                onOpenExternal={onOpenExternal}
+                onOpenSource={onOpenSource}
+              />
+            ) : (
+              <MarkdownReview
+                markdown={review.markdown}
+                onCodeReference={onOpenSource}
+                onExternalLink={onOpenExternal}
+              />
+            )}
             {review.metadata.instructionSources.length > 0 && (
               <div className="mt-10 border-t pt-5">
                 <p className="mb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
@@ -571,6 +655,7 @@ interface SettingsSurfaceProps {
   bootstrap: BootstrapState
   busy: boolean
   onChooseExecutable: () => void
+  onOpenLogFolder: () => void
   onRefreshAgent: () => void
   onUpdateSettings: (input: Parameters<typeof window.shippy.updateSettings>[0]) => void
 }
@@ -579,6 +664,7 @@ function SettingsSurface({
   bootstrap,
   busy,
   onChooseExecutable,
+  onOpenLogFolder,
   onRefreshAgent,
   onUpdateSettings,
 }: SettingsSurfaceProps) {
@@ -587,7 +673,6 @@ function SettingsSurface({
   const model = bootstrap.agent.models.find(
     (candidate) => candidate.id === bootstrap.settings.model,
   )
-
   return (
     <div className="mx-auto max-w-4xl space-y-6 p-8 lg:p-10">
       <div>
@@ -650,6 +735,41 @@ function SettingsSurface({
 
       <Card>
         <CardHeader>
+          <CardTitle>Diagnostics</CardTitle>
+          <CardDescription>
+            Local rotating logs help diagnose Shippy, Electron, Git, and Codex connection failures.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-start justify-between gap-5 rounded-lg border bg-muted/20 p-4">
+            <div>
+              <Label htmlFor="debug-logging">Enable debug logging</Label>
+              <p className="mt-2 max-w-xl text-xs leading-5 text-muted-foreground">
+                Adds local paths and stack traces until you turn it off. Repository contents,
+                prompts, reasoning, tool arguments, and command output are never logged.
+              </p>
+            </div>
+            <Switch
+              checked={bootstrap.settings.debugLoggingEnabled}
+              disabled={busy}
+              id="debug-logging"
+              onCheckedChange={(checked) => onUpdateSettings({ debugLoggingEnabled: checked })}
+            />
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-xs leading-5 text-muted-foreground">
+              Shippy keeps one 5 MiB log and one rotated archive on this computer.
+            </p>
+            <Button disabled={busy} onClick={onOpenLogFolder} variant="outline">
+              <FolderOpen />
+              Open log folder
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>Model and style</CardTitle>
           <CardDescription>
             Models and reasoning efforts come directly from App Server.
@@ -696,23 +816,6 @@ function SettingsSurface({
               </SelectContent>
             </Select>
           </div>
-          <div className="space-y-2 sm:col-span-2">
-            <Label>Review format</Label>
-            <Select
-              value={bootstrap.settings.reviewFormat}
-              onValueChange={(value: 'concise-markdown' | 'conventional-comments') =>
-                onUpdateSettings({ reviewFormat: value })
-              }
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="conventional-comments">Conventional Comments</SelectItem>
-                <SelectItem value="concise-markdown">Concise Markdown</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
         </CardContent>
       </Card>
 
@@ -720,7 +823,7 @@ function SettingsSurface({
         <CardHeader>
           <CardTitle>Personal instructions</CardTitle>
           <CardDescription>
-            Applied after the read-only contract, project rules, and format preset.
+            Applied after the read-only contract, structured format, and project rules.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -747,6 +850,7 @@ function SettingsSurface({
 }
 
 export function App() {
+  const [activity, setActivity] = useState<ReviewRun | null>(null)
   const [bootstrap, setBootstrap] = useState<BootstrapState | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -754,6 +858,7 @@ export function App() {
   const [repository, setRepository] = useState<RepositorySnapshot | null>(null)
   const [review, setReview] = useState<ReviewDocument | null>(null)
   const [reviews, setReviews] = useState<ReviewSummary[]>([])
+  const [runs, setRuns] = useState<ReviewRunSummary[]>([])
   const [source, setSource] = useState<SourcePreview | null>(null)
   const [surface, setSurface] = useState<Surface>('repository')
 
@@ -764,6 +869,12 @@ export function App() {
 
   useEffect(() => {
     const unsubscribe = window.shippy.onReviewProgress(setProgress)
+    const onError = (event: ErrorEvent): void =>
+      reportRendererError('error', event.error ?? event.message, 'Renderer error')
+    const onUnhandledRejection = (event: PromiseRejectionEvent): void =>
+      reportRendererError('unhandled-rejection', event.reason, 'Unhandled renderer rejection')
+    window.addEventListener('error', onError)
+    window.addEventListener('unhandledrejection', onUnhandledRejection)
     void (async () => {
       try {
         setBootstrap(unwrapResult(await window.shippy.getBootstrap()))
@@ -771,8 +882,31 @@ export function App() {
         setError(caught instanceof Error ? caught.message : 'Shippy could not start.')
       }
     })()
-    return unsubscribe
+    return () => {
+      unsubscribe()
+      window.removeEventListener('error', onError)
+      window.removeEventListener('unhandledrejection', onUnhandledRejection)
+    }
   }, [])
+
+  useEffect(() => {
+    if (!repository) {
+      return undefined
+    }
+    return window.shippy.onActivityUpdate((update) => {
+      if (update.run.repositoryRoot !== repository.root) {
+        return
+      }
+      setRuns((current) =>
+        [...current.filter((run) => run.id !== update.run.id), update.run].sort((left, right) =>
+          right.startedAt.localeCompare(left.startedAt),
+        ),
+      )
+      setActivity((current) =>
+        current?.metadata.id === update.run.id ? mergeRunUpdate(current, update) : current,
+      )
+    })
+  }, [repository])
 
   async function run(operation: () => Promise<void>): Promise<void> {
     setBusy(true)
@@ -794,9 +928,19 @@ export function App() {
     }
   }
 
+  async function refreshActivity(openLatest = false): Promise<void> {
+    const nextRuns = unwrapResult(await window.shippy.listActivity())
+    setRuns(nextRuns)
+    if (openLatest && nextRuns[0]) {
+      setActivity(unwrapResult(await window.shippy.readActivity(nextRuns[0].id)))
+    }
+  }
+
   function acceptRepository(next: RepositorySnapshot): void {
     setRepository(next)
+    setActivity(null)
     setReview(null)
+    setRuns([])
     setSource(null)
   }
 
@@ -807,7 +951,7 @@ export function App() {
         return
       }
       acceptRepository(selected)
-      await refreshHistory()
+      await Promise.all([refreshHistory(), refreshActivity()])
       setBootstrap(unwrapResult(await window.shippy.updateSettings({})))
       setSurface('repository')
     })
@@ -816,7 +960,7 @@ export function App() {
   async function openRecent(path: string): Promise<void> {
     await run(async () => {
       acceptRepository(unwrapResult(await window.shippy.openRecentRepository(path)))
-      await refreshHistory()
+      await Promise.all([refreshHistory(), refreshActivity()])
       setSurface('repository')
     })
   }
@@ -824,14 +968,14 @@ export function App() {
   async function refreshRepository(): Promise<void> {
     await run(async () => {
       acceptRepository(unwrapResult(await window.shippy.refreshRepository()))
-      await refreshHistory()
+      await Promise.all([refreshHistory(), refreshActivity()])
     })
   }
 
   async function updateBase(baseBranch: string): Promise<void> {
     await run(async () => {
       setRepository(unwrapResult(await window.shippy.refreshRepository(baseBranch)))
-      await refreshHistory()
+      await Promise.all([refreshHistory(), refreshActivity()])
     })
   }
 
@@ -861,7 +1005,7 @@ export function App() {
       setReview(document)
       setSource(null)
       setRepository(unwrapResult(await window.shippy.refreshRepository()))
-      await refreshHistory()
+      await Promise.all([refreshHistory(), refreshActivity()])
       setSurface('reviews')
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : 'The review failed.'
@@ -885,15 +1029,39 @@ export function App() {
   }
 
   async function deleteReview(id: string): Promise<void> {
-    if (!window.confirm('Delete this review permanently?')) {
+    if (!window.confirm('Delete this review and its activity permanently?')) {
       return
     }
     await run(async () => {
       const nextReviews = unwrapResult(await window.shippy.deleteReview(id))
       setReviews(nextReviews)
+      setRuns(unwrapResult(await window.shippy.listActivity()))
+      setActivity((current) => (current?.metadata.id === id ? null : current))
       setReview(null)
       setSource(null)
     })
+  }
+
+  async function openActivity(id: string): Promise<void> {
+    await run(async () => {
+      setActivity(unwrapResult(await window.shippy.readActivity(id)))
+    })
+  }
+
+  async function deleteActivity(id: string): Promise<void> {
+    if (!window.confirm('Delete this run and its review, if one exists?')) {
+      return
+    }
+    await run(async () => {
+      setRuns(unwrapResult(await window.shippy.deleteActivity(id)))
+      setActivity(null)
+      await refreshHistory()
+    })
+  }
+
+  async function openReviewFromActivity(id: string): Promise<void> {
+    await openReview(id)
+    setSurface('reviews')
   }
 
   async function openSource(reference: CodeReference): Promise<void> {
@@ -912,6 +1080,26 @@ export function App() {
         ),
       )
     })
+  }
+
+  async function copyText(text: string): Promise<boolean> {
+    setError(null)
+    try {
+      unwrapResult(await window.shippy.copyText(text))
+      return true
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'The review could not be copied.')
+      return false
+    }
+  }
+
+  async function openExternal(url: string): Promise<void> {
+    setError(null)
+    try {
+      unwrapResult(await window.shippy.openExternal(url))
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'The external link could not be opened.')
+    }
   }
 
   async function refreshAgent(): Promise<void> {
@@ -936,6 +1124,19 @@ export function App() {
     })
   }
 
+  async function openLogFolder(): Promise<void> {
+    await run(async () => {
+      unwrapResult(await window.shippy.openLogFolder())
+    })
+  }
+
+  function selectSurface(next: Surface): void {
+    setSurface(next)
+    if (next === 'activity' && !activity && runs[0]) {
+      void openActivity(runs[0].id)
+    }
+  }
+
   if (!bootstrap) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background text-foreground">
@@ -952,7 +1153,7 @@ export function App() {
       <Sidebar
         bootstrap={bootstrap}
         onOpenRecent={(path) => void openRecent(path)}
-        onSelectSurface={setSurface}
+        onSelectSurface={selectSurface}
         repository={repository}
         surface={surface}
       />
@@ -978,12 +1179,23 @@ export function App() {
           {surface === 'reviews' && (
             <ReviewsSurface
               onCloseSource={() => setSource(null)}
+              onCopy={copyText}
               onDelete={(id) => void deleteReview(id)}
+              onOpenExternal={(url) => void openExternal(url)}
               onOpenReview={(id) => void openReview(id)}
               onOpenSource={(reference) => void openSource(reference)}
               review={review}
               reviews={reviews}
               source={source}
+            />
+          )}
+          {surface === 'activity' && (
+            <ActivitySurface
+              activity={activity}
+              onDelete={(id) => void deleteActivity(id)}
+              onOpen={(id) => void openActivity(id)}
+              onOpenReview={(id) => void openReviewFromActivity(id)}
+              runs={runs}
             />
           )}
           {surface === 'settings' && (
@@ -992,6 +1204,7 @@ export function App() {
                 bootstrap={bootstrap}
                 busy={busy}
                 onChooseExecutable={() => void chooseExecutable()}
+                onOpenLogFolder={() => void openLogFolder()}
                 onRefreshAgent={() => void refreshAgent()}
                 onUpdateSettings={(input) => void updateSettings(input)}
               />
@@ -1001,10 +1214,19 @@ export function App() {
         {reviewRunning && (
           <div className="absolute right-5 bottom-5 flex items-center gap-3 rounded-xl border bg-card px-4 py-3 shadow-2xl">
             <LoaderCircle className="size-4 animate-spin text-primary" />
-            <div>
+            <button
+              className="text-left"
+              onClick={() => {
+                setSurface('activity')
+                if (progress?.reviewId) {
+                  void openActivity(progress.reviewId)
+                }
+              }}
+              type="button"
+            >
               <p className="text-sm font-medium">{progress?.message}</p>
-              <p className="text-xs text-muted-foreground">One review runs at a time.</p>
-            </div>
+              <p className="text-xs text-muted-foreground">Open live agent activity</p>
+            </button>
             <Button
               aria-label="Cancel review"
               onClick={() => void cancelReview()}

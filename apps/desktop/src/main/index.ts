@@ -1,22 +1,38 @@
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { app, BrowserWindow, dialog, ipcMain, type OpenDialogOptions } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  type OpenDialogOptions,
+  shell,
+} from 'electron'
 import { z } from 'zod'
 import {
+  clipboardTextSchema,
+  externalUrlSchema,
   ipcChannels,
   optionalBaseBranchInputSchema,
   type Result,
   readSourceInputSchema,
   recentRepositoryInputSchema,
+  rendererDiagnosticInputSchema,
   reviewIdSchema,
   reviewProgressSchema,
+  reviewRunUpdateSchema,
   startReviewInputSchema,
   updateRepositoryPreferencesInputSchema,
   updateSettingsInputSchema,
 } from '../shared/contracts.js'
 import { ShippyService } from './app-service.js'
+import { createLogger, initializeLogging, logError } from './logger.js'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
+const authorName = 'Phillipp Bertram'
+const repositoryUrl = 'https://github.com/phillippbertram/shippy'
+const logger = createLogger('main')
 let mainWindow: BrowserWindow | null = null
 let service: ShippyService | null = null
 
@@ -31,6 +47,7 @@ async function result<T>(operation: () => Promise<T>): Promise<Result<T>> {
   try {
     return { ok: true, value: await operation() }
   } catch (error) {
+    logError('ipc', 'IPC operation failed', error)
     return { error: messageFromError(error), ok: false }
   }
 }
@@ -47,6 +64,13 @@ function showOpenDialog(options: OpenDialogOptions): Promise<Electron.OpenDialog
 }
 
 function registerIpc(): void {
+  ipcMain.handle(ipcChannels.activityList, () => result(() => requireService().listActivity()))
+  ipcMain.handle(ipcChannels.activityRead, (_event, input: unknown) =>
+    result(() => requireService().readActivity(reviewIdSchema.parse(input))),
+  )
+  ipcMain.handle(ipcChannels.activityDelete, (_event, input: unknown) =>
+    result(() => requireService().deleteActivity(reviewIdSchema.parse(input))),
+  )
   ipcMain.handle(ipcChannels.appBootstrap, () => result(() => requireService().getBootstrap()))
   ipcMain.handle(ipcChannels.agentRefresh, () => result(() => requireService().refreshAgent()))
   ipcMain.handle(ipcChannels.agentChooseExecutable, () =>
@@ -61,6 +85,12 @@ function registerIpc(): void {
         return requireService().refreshAgent()
       }
       return requireService().setCodexExecutable(executable)
+    }),
+  )
+  ipcMain.handle(ipcChannels.clipboardWrite, (_event, input: unknown) =>
+    result(async () => {
+      clipboard.writeText(clipboardTextSchema.parse(input))
+      return null
     }),
   )
 
@@ -112,6 +142,33 @@ function registerIpc(): void {
   ipcMain.handle(ipcChannels.settingsUpdate, (_event, input: unknown) =>
     result(() => requireService().updateSettings(updateSettingsInputSchema.parse(input))),
   )
+  ipcMain.handle(ipcChannels.diagnosticsOpenLogFolder, () =>
+    result(async () => {
+      const error = await shell.openPath(app.getPath('logs'))
+      if (error) {
+        throw new Error('Shippy could not open the log folder.')
+      }
+      return null
+    }),
+  )
+  ipcMain.handle(ipcChannels.externalOpen, (_event, input: unknown) =>
+    result(async () => {
+      await shell.openExternal(externalUrlSchema.parse(input))
+      return null
+    }),
+  )
+  ipcMain.on(ipcChannels.diagnosticsRendererError, (_event, input: unknown) => {
+    const diagnostic = rendererDiagnosticInputSchema.safeParse(input)
+    if (!diagnostic.success) {
+      logger.warn('Ignored an invalid renderer diagnostic')
+      return
+    }
+    logger.error(`Renderer ${diagnostic.data.kind}`)
+    logger.debug('Renderer error details', {
+      message: diagnostic.data.message,
+      stack: diagnostic.data.stack,
+    })
+  })
   ipcMain.handle(ipcChannels.reviewList, () => result(() => requireService().listReviews()))
   ipcMain.handle(ipcChannels.reviewRead, (_event, input: unknown) =>
     result(() => requireService().readReview(reviewIdSchema.parse(input))),
@@ -178,14 +235,32 @@ function createWindow(): void {
 }
 
 app.setName('Shippy')
+initializeLogging(app.getPath('logs'))
 
 void app.whenReady().then(() => {
-  service = new ShippyService(app.getPath('userData'), (progress) => {
-    const validated = reviewProgressSchema.safeParse(progress)
-    if (validated.success && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send(ipcChannels.reviewProgress, validated.data)
-    }
+  app.setAboutPanelOptions({
+    applicationName: 'Shippy',
+    applicationVersion: app.getVersion(),
+    authors: [authorName],
+    credits: `Author: ${authorName}\nGitHub: ${repositoryUrl}`,
+    website: repositoryUrl,
   })
+  logger.info('Shippy app ready')
+  service = new ShippyService(
+    app.getPath('userData'),
+    (progress) => {
+      const validated = reviewProgressSchema.safeParse(progress)
+      if (validated.success && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(ipcChannels.reviewProgress, validated.data)
+      }
+    },
+    (update) => {
+      const validated = reviewRunUpdateSchema.safeParse(update)
+      if (validated.success && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(ipcChannels.activityUpdated, validated.data)
+      }
+    },
+  )
   registerIpc()
   createWindow()
 
@@ -197,6 +272,7 @@ void app.whenReady().then(() => {
 })
 
 app.on('before-quit', () => {
+  logger.info('Shippy app quitting')
   void service?.stop()
 })
 

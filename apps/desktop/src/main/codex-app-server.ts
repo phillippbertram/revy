@@ -2,7 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import { constants } from 'node:fs'
 import { access, realpath } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { basename, delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { createInterface, type Interface } from 'node:readline'
 import { z } from 'zod'
 import type { InitializeParams } from '../generated/codex-app-server/InitializeParams.js'
@@ -19,7 +19,10 @@ import type { ThreadStartResponse } from '../generated/codex-app-server/v2/Threa
 import type { TurnCompletedNotification } from '../generated/codex-app-server/v2/TurnCompletedNotification.js'
 import type { TurnInterruptParams } from '../generated/codex-app-server/v2/TurnInterruptParams.js'
 import type { TurnStartedNotification } from '../generated/codex-app-server/v2/TurnStartedNotification.js'
-import type { AgentStatus, CodexModel } from '../shared/contracts.js'
+import type { AgentActivityEntry, AgentStatus, CodexModel } from '../shared/contracts.js'
+import { createLogger, logError } from './logger.js'
+
+const logger = createLogger('codex')
 
 const requestIdSchema = z.union([z.string(), z.number().int()])
 const rpcErrorSchema = z.looseObject({
@@ -83,9 +86,75 @@ const itemCompletedSchema = z.looseObject({
   threadId: z.string(),
   turnId: z.string(),
 })
+const itemNotificationSchema = z.looseObject({
+  completedAtMs: z.number().optional(),
+  item: z.unknown(),
+  startedAtMs: z.number().optional(),
+  threadId: z.string(),
+  turnId: z.string(),
+})
+const itemBaseSchema = z.looseObject({ id: z.string().min(1), type: z.string().min(1) })
+const commandActionSchema = z.looseObject({
+  command: z.string(),
+  name: z.string().optional(),
+  path: z.string().nullable().optional(),
+  type: z.enum(['read', 'listFiles', 'search', 'unknown']),
+})
+const commandItemSchema = z.looseObject({
+  commandActions: z.array(commandActionSchema),
+  cwd: z.string(),
+  durationMs: z.number().int().nonnegative().nullable(),
+  exitCode: z.number().int().nullable(),
+  id: z.string().min(1),
+  status: z.enum(['inProgress', 'completed', 'failed', 'declined']),
+  type: z.literal('commandExecution'),
+})
+const fileChangeItemSchema = z.looseObject({
+  changes: z.array(z.looseObject({ path: z.string() })),
+  id: z.string().min(1),
+  type: z.literal('fileChange'),
+})
+const mcpToolItemSchema = z.looseObject({
+  durationMs: z.number().int().nonnegative().nullable(),
+  id: z.string().min(1),
+  server: z.string(),
+  status: z.enum(['inProgress', 'completed', 'failed']),
+  tool: z.string(),
+  type: z.literal('mcpToolCall'),
+})
+const dynamicToolItemSchema = z.looseObject({
+  durationMs: z.number().int().nonnegative().nullable(),
+  id: z.string().min(1),
+  namespace: z.string().nullable(),
+  status: z.enum(['inProgress', 'completed', 'failed']),
+  tool: z.string(),
+  type: z.literal('dynamicToolCall'),
+})
+const collaborationItemSchema = z.looseObject({
+  id: z.string().min(1),
+  status: z.enum(['inProgress', 'completed', 'failed']),
+  tool: z.enum(['spawnAgent', 'sendInput', 'resumeAgent', 'wait', 'closeAgent']),
+  type: z.literal('collabAgentToolCall'),
+})
+const subagentItemSchema = z.looseObject({
+  id: z.string().min(1),
+  kind: z.enum(['started', 'interacted', 'interrupted']),
+  type: z.literal('subAgentActivity'),
+})
+const webSearchItemSchema = z.looseObject({
+  id: z.string().min(1),
+  type: z.literal('webSearch'),
+})
+const errorNotificationSchema = z.looseObject({
+  threadId: z.string(),
+  turnId: z.string(),
+  willRetry: z.boolean(),
+})
 const turnCompletedSchema = z.looseObject({
   threadId: z.string(),
   turn: z.looseObject({
+    completedAt: z.number().nullable().optional(),
+    durationMs: z.number().int().nonnegative().nullable().optional(),
     error: z.looseObject({ message: z.string() }).nullable().optional(),
     id: z.string(),
     status: z.enum(['completed', 'interrupted', 'failed', 'inProgress']),
@@ -93,7 +162,7 @@ const turnCompletedSchema = z.looseObject({
 })
 const turnStartedSchema = z.looseObject({
   threadId: z.string(),
-  turn: z.looseObject({ id: z.string().min(1) }),
+  turn: z.looseObject({ id: z.string().min(1), startedAt: z.number().nullable().optional() }),
 })
 
 type AccountResponseProjection = Pick<GetAccountResponse, 'account' | 'requiresOpenaiAuth'>
@@ -118,11 +187,13 @@ type ItemCompletedProjection = Pick<ItemCompletedNotification, 'threadId' | 'tur
 }
 type TurnCompletedProjection = Pick<TurnCompletedNotification, 'threadId'> & {
   turn: Pick<TurnCompletedNotification['turn'], 'id' | 'status'> & {
+    completedAt?: number | null
+    durationMs?: number | null
     error?: { message: string } | null
   }
 }
 type TurnStartedProjection = Pick<TurnStartedNotification, 'threadId'> & {
-  turn: Pick<TurnStartedNotification['turn'], 'id'>
+  turn: Pick<TurnStartedNotification['turn'], 'id'> & { startedAt?: number | null }
 }
 
 interface PendingRequest {
@@ -138,6 +209,8 @@ interface ActiveReview {
   instructionSources: string[]
   interruptTurnId: string | null
   markdown: string | null
+  onActivity: (activity: BackendActivity) => void
+  repositoryRoot: string
   reject: (error: Error) => void
   resolve: (value: BackendReviewResult) => void
   reviewTurnId: string | null
@@ -146,11 +219,14 @@ interface ActiveReview {
 
 export interface StartBackendReviewInput {
   model: string
+  onActivity: (activity: BackendActivity) => void
   onProgress: (message: string) => void
   prompt: string
   reasoningEffort: string
   repositoryRoot: string
 }
+
+export type BackendActivity = Omit<AgentActivityEntry, 'runId' | 'sequence'>
 
 export interface BackendReviewResult {
   instructionSources: string[]
@@ -176,6 +252,241 @@ function parseProtocol<T>(schema: z.ZodType, value: unknown, label: string): T {
     throw protocolError(label, result.error)
   }
   return result.data as T
+}
+
+function timestampFromMilliseconds(value: number | undefined): string {
+  const date = value && Number.isFinite(value) ? new Date(value) : new Date()
+  return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString()
+}
+
+function timestampFromSeconds(value: number | null | undefined): string {
+  const date = value && Number.isFinite(value) ? new Date(value * 1_000) : new Date()
+  return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString()
+}
+
+function safeName(value: string): string | null {
+  const trimmed = value.trim().slice(0, 128)
+  return trimmed || null
+}
+
+function commandName(command: string): string | null {
+  const token = command.trim().match(/^[a-zA-Z0-9_./+-]+/)?.[0]
+  return token ? safeName(basename(token)) : null
+}
+
+function repositoryPath(repositoryRoot: string, cwd: string, value: string): string | null {
+  const absolute = isAbsolute(value) ? value : resolve(cwd, value)
+  const candidate = relative(repositoryRoot, absolute)
+  if (candidate === '') {
+    return '.'
+  }
+  if (candidate === '..' || candidate.startsWith(`..${sep}`) || isAbsolute(candidate)) {
+    return null
+  }
+  return candidate.split(sep).join('/')
+}
+
+function activityStatus(
+  status: 'inProgress' | 'completed' | 'failed' | 'declined',
+): AgentActivityEntry['status'] {
+  if (status === 'inProgress') {
+    return 'in-progress'
+  }
+  return status === 'completed' ? 'completed' : 'failed'
+}
+
+function commandTitle(actions: Array<z.infer<typeof commandActionSchema>>): string {
+  const types = new Set(actions.map((action) => action.type))
+  if (types.size > 1) {
+    return 'Ran repository inspection.'
+  }
+  if (types.has('read')) {
+    return 'Read a repository file.'
+  }
+  if (types.has('listFiles')) {
+    return 'Listed repository files.'
+  }
+  if (types.has('search')) {
+    return 'Searched the repository.'
+  }
+  return 'Ran a shell command.'
+}
+
+function activityFromItem(
+  value: unknown,
+  phase: 'started' | 'completed',
+  occurredAt: string,
+  repositoryRoot: string,
+): BackendActivity | null {
+  const base = itemBaseSchema.safeParse(value)
+  if (!base.success) {
+    logger.warn('Ignored an invalid Codex activity item')
+    return null
+  }
+
+  if (base.data.type === 'commandExecution') {
+    const parsed = commandItemSchema.safeParse(value)
+    if (!parsed.success) {
+      logger.warn('Ignored an invalid command activity item')
+      return null
+    }
+    const names = [
+      ...new Set(parsed.data.commandActions.map((action) => commandName(action.command))),
+    ].filter((name): name is string => name !== null)
+    const paths = [
+      ...new Set(
+        parsed.data.commandActions
+          .map((action) =>
+            action.path ? repositoryPath(repositoryRoot, parsed.data.cwd, action.path) : null,
+          )
+          .filter((path): path is string => path !== null),
+      ),
+    ].slice(0, 32)
+    return {
+      durationMs: parsed.data.durationMs,
+      exitCode: parsed.data.exitCode,
+      id: parsed.data.id,
+      kind: 'command',
+      name: safeName(names.join(', ')),
+      occurredAt,
+      paths,
+      status: activityStatus(parsed.data.status),
+      title: commandTitle(parsed.data.commandActions),
+    }
+  }
+
+  if (base.data.type === 'fileChange') {
+    const parsed = fileChangeItemSchema.safeParse(value)
+    if (!parsed.success) {
+      logger.warn('Ignored an invalid file-change activity item')
+      return null
+    }
+    return {
+      durationMs: null,
+      exitCode: null,
+      id: parsed.data.id,
+      kind: 'warning',
+      name: null,
+      occurredAt,
+      paths: parsed.data.changes
+        .map((change) => repositoryPath(repositoryRoot, repositoryRoot, change.path))
+        .filter((path): path is string => path !== null)
+        .slice(0, 32),
+      status: 'warning',
+      title: 'Codex reported an unexpected file-change attempt.',
+    }
+  }
+
+  if (base.data.type === 'mcpToolCall') {
+    const parsed = mcpToolItemSchema.safeParse(value)
+    if (!parsed.success) {
+      logger.warn('Ignored an invalid MCP tool activity item')
+      return null
+    }
+    return {
+      durationMs: parsed.data.durationMs,
+      exitCode: null,
+      id: parsed.data.id,
+      kind: 'tool',
+      name: safeName(`${parsed.data.server}/${parsed.data.tool}`),
+      occurredAt,
+      paths: [],
+      status: activityStatus(parsed.data.status),
+      title: 'Used an external tool.',
+    }
+  }
+
+  if (base.data.type === 'dynamicToolCall') {
+    const parsed = dynamicToolItemSchema.safeParse(value)
+    if (!parsed.success) {
+      logger.warn('Ignored an invalid dynamic tool activity item')
+      return null
+    }
+    const name = parsed.data.namespace
+      ? `${parsed.data.namespace}/${parsed.data.tool}`
+      : parsed.data.tool
+    return {
+      durationMs: parsed.data.durationMs,
+      exitCode: null,
+      id: parsed.data.id,
+      kind: 'tool',
+      name: safeName(name),
+      occurredAt,
+      paths: [],
+      status: activityStatus(parsed.data.status),
+      title: 'Used an agent tool.',
+    }
+  }
+
+  if (base.data.type === 'collabAgentToolCall') {
+    const parsed = collaborationItemSchema.safeParse(value)
+    if (!parsed.success) {
+      logger.warn('Ignored an invalid collaboration activity item')
+      return null
+    }
+    return {
+      durationMs: null,
+      exitCode: null,
+      id: parsed.data.id,
+      kind: 'subagent',
+      name: parsed.data.tool,
+      occurredAt,
+      paths: [],
+      status: activityStatus(parsed.data.status),
+      title: 'Coordinated agent work.',
+    }
+  }
+
+  if (base.data.type === 'subAgentActivity') {
+    const parsed = subagentItemSchema.safeParse(value)
+    if (!parsed.success) {
+      logger.warn('Ignored an invalid subagent activity item')
+      return null
+    }
+    return {
+      durationMs: null,
+      exitCode: null,
+      id: parsed.data.id,
+      kind: 'subagent',
+      name: null,
+      occurredAt,
+      paths: [],
+      status:
+        phase === 'started'
+          ? 'in-progress'
+          : parsed.data.kind === 'interrupted'
+            ? 'interrupted'
+            : 'completed',
+      title:
+        parsed.data.kind === 'started'
+          ? 'Subagent started.'
+          : parsed.data.kind === 'interacted'
+            ? 'Subagent activity received.'
+            : 'Subagent interrupted.',
+    }
+  }
+
+  if (base.data.type === 'webSearch') {
+    const parsed = webSearchItemSchema.safeParse(value)
+    if (!parsed.success) {
+      logger.warn('Ignored an invalid web-search activity item')
+      return null
+    }
+    return {
+      durationMs: null,
+      exitCode: null,
+      id: parsed.data.id,
+      kind: 'web-search',
+      name: null,
+      occurredAt,
+      paths: [],
+      status: phase === 'started' ? 'in-progress' : 'completed',
+      title: 'Searched the web.',
+    }
+  }
+
+  logger.debug('Ignored unsupported Codex activity item', { itemType: base.data.type })
+  return null
 }
 
 function accountLabel(account: z.infer<typeof accountSchema> | null | undefined): string | null {
@@ -220,6 +531,7 @@ export class CodexAppServerBackend implements ReviewBackend {
       if (this.executable !== executable || !this.child) {
         await this.stop()
         this.executable = executable
+        logger.debug('Using Codex executable', { executable })
         this.version = await this.readVersion(executable)
         await this.startServer(executable)
       }
@@ -232,7 +544,7 @@ export class CodexAppServerBackend implements ReviewBackend {
       )
       const models = await this.listModels()
       const unauthenticated = accountResult.requiresOpenaiAuth && !accountResult.account
-      return {
+      const status: AgentStatus = {
         accountLabel: accountLabel(accountResult.account),
         error: unauthenticated
           ? 'Codex is not signed in. Run `codex login` in a terminal and retry.'
@@ -242,9 +554,12 @@ export class CodexAppServerBackend implements ReviewBackend {
         state: unauthenticated ? 'unauthenticated' : 'ready',
         version: this.version,
       }
+      logger.info('Codex connection ready', { modelCount: models.length })
+      return status
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Codex could not be reached.'
       await this.stop()
+      logError('codex', 'Codex probe failed', error)
       return {
         accountLabel: null,
         error: message,
@@ -294,6 +609,8 @@ export class CodexAppServerBackend implements ReviewBackend {
     }
 
     input.onProgress('Opening a read-only Codex review session…')
+    logger.info('Starting Codex review session')
+    logger.debug('Codex review repository', { repositoryRoot: input.repositoryRoot })
     const threadParams: ThreadStartParams = {
       approvalPolicy: 'never',
       config: { model_reasoning_effort: input.reasoningEffort },
@@ -324,6 +641,8 @@ export class CodexAppServerBackend implements ReviewBackend {
       instructionSources: threadResult.instructionSources,
       interruptTurnId: null,
       markdown: null,
+      onActivity: input.onActivity,
+      repositoryRoot: input.repositoryRoot,
       reject: rejectReview,
       resolve: resolveReview,
       reviewTurnId: null,
@@ -383,6 +702,7 @@ export class CodexAppServerBackend implements ReviewBackend {
     }
     this.executable = null
     this.stopping = false
+    logger.info('Codex App Server stopped')
   }
 
   private async startServer(executable: string): Promise<void> {
@@ -391,6 +711,7 @@ export class CodexAppServerBackend implements ReviewBackend {
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     this.child = child
+    logger.info('Codex App Server started')
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => {
       this.stderrTail = `${this.stderrTail}${chunk}`.slice(-4_000)
@@ -423,10 +744,12 @@ export class CodexAppServerBackend implements ReviewBackend {
     try {
       raw = JSON.parse(line) as unknown
     } catch {
+      logger.warn('Ignored non-JSON output from Codex App Server')
       return
     }
     const parsed = rpcMessageSchema.safeParse(raw)
     if (!parsed.success) {
+      logger.warn('Ignored an unsupported Codex App Server message')
       return
     }
     const message = parsed.data
@@ -467,6 +790,17 @@ export class CodexAppServerBackend implements ReviewBackend {
       const parsed = validated.success ? (validated.data as TurnStartedProjection) : null
       if (parsed && this.activeReview && parsed.threadId === this.activeReview.threadId) {
         this.activeReview.interruptTurnId = parsed.turn.id
+        this.activeReview.onActivity({
+          durationMs: null,
+          exitCode: null,
+          id: parsed.turn.id,
+          kind: 'lifecycle',
+          name: null,
+          occurredAt: timestampFromSeconds(parsed.turn.startedAt),
+          paths: [],
+          status: 'in-progress',
+          title: 'Codex review turn started.',
+        })
         if (this.activeReview.cancelRequested) {
           void this.cancelActiveReviewIfReady().catch((error: unknown) => {
             this.rejectActiveReview(
@@ -478,17 +812,40 @@ export class CodexAppServerBackend implements ReviewBackend {
       return
     }
 
-    if (method === 'item/completed') {
-      const validated = itemCompletedSchema.safeParse(params)
-      const parsed = validated.success ? (validated.data as ItemCompletedProjection) : null
+    if (method === 'item/started' || method === 'item/completed') {
+      const notification = itemNotificationSchema.safeParse(params)
+      if (!notification.success) {
+        logger.warn(`Ignored an invalid ${method} notification`)
+        return
+      }
+      const review = this.activeReview
       if (
-        parsed &&
-        this.activeReview &&
-        parsed.threadId === this.activeReview.threadId &&
-        parsed.turnId === this.activeReview.reviewTurnId
+        !review ||
+        notification.data.threadId !== review.threadId ||
+        (review.reviewTurnId && notification.data.turnId !== review.reviewTurnId)
       ) {
-        this.activeReview.markdown = parsed.item.review
-        this.finishActiveReviewIfReady()
+        return
+      }
+      const phase = method === 'item/started' ? 'started' : 'completed'
+      const activity = activityFromItem(
+        notification.data.item,
+        phase,
+        timestampFromMilliseconds(
+          phase === 'started' ? notification.data.startedAtMs : notification.data.completedAtMs,
+        ),
+        review.repositoryRoot,
+      )
+      if (activity) {
+        review.onActivity(activity)
+      }
+
+      if (method === 'item/completed') {
+        const validated = itemCompletedSchema.safeParse(params)
+        const parsed = validated.success ? (validated.data as ItemCompletedProjection) : null
+        if (parsed) {
+          review.markdown = parsed.item.review
+          this.finishActiveReviewIfReady()
+        }
       }
       return
     }
@@ -504,6 +861,32 @@ export class CodexAppServerBackend implements ReviewBackend {
       ) {
         return
       }
+      const status: AgentActivityEntry['status'] =
+        parsed.turn.status === 'completed'
+          ? 'completed'
+          : parsed.turn.status === 'interrupted'
+            ? 'interrupted'
+            : parsed.turn.status === 'failed'
+              ? 'failed'
+              : 'in-progress'
+      this.activeReview.onActivity({
+        durationMs: parsed.turn.durationMs ?? null,
+        exitCode: null,
+        id: parsed.turn.id,
+        kind: 'lifecycle',
+        name: null,
+        occurredAt: timestampFromSeconds(parsed.turn.completedAt),
+        paths: [],
+        status,
+        title:
+          status === 'completed'
+            ? 'Codex review turn completed.'
+            : status === 'interrupted'
+              ? 'Codex review turn interrupted.'
+              : status === 'failed'
+                ? 'Codex review turn failed.'
+                : 'Codex review turn is running.',
+      })
       if (parsed.turn.status === 'failed') {
         this.rejectActiveReview(
           new Error(parsed.turn.error?.message ?? 'Codex could not complete the review.'),
@@ -521,6 +904,33 @@ export class CodexAppServerBackend implements ReviewBackend {
         } else {
           this.finishActiveReviewIfReady()
         }
+      }
+      return
+    }
+
+    if (method === 'error') {
+      const parsed = errorNotificationSchema.safeParse(params)
+      if (
+        parsed.success &&
+        this.activeReview &&
+        parsed.data.threadId === this.activeReview.threadId &&
+        (!this.activeReview.reviewTurnId || parsed.data.turnId === this.activeReview.reviewTurnId)
+      ) {
+        this.activeReview.onActivity({
+          durationMs: null,
+          exitCode: null,
+          id: `error:${parsed.data.turnId}:${Date.now()}`,
+          kind: 'warning',
+          name: null,
+          occurredAt: new Date().toISOString(),
+          paths: [],
+          status: 'warning',
+          title: parsed.data.willRetry
+            ? 'Codex reported an error and will retry.'
+            : 'Codex reported an error.',
+        })
+      } else if (!parsed.success) {
+        logger.warn('Ignored an invalid Codex error notification')
       }
     }
   }
@@ -591,6 +1001,7 @@ export class CodexAppServerBackend implements ReviewBackend {
   }
 
   private handleProcessExit(error: Error): void {
+    logger.error('Codex App Server exited unexpectedly')
     this.child = null
     this.reader?.close()
     this.reader = null

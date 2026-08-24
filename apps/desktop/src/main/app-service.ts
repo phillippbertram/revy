@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type {
+  AgentActivityEntry,
   AgentStatus,
   AppSettings,
   BootstrapState,
@@ -8,15 +9,28 @@ import type {
   ReviewDocument,
   ReviewMetadata,
   ReviewProgress,
+  ReviewRun,
+  ReviewRunMetadata,
+  ReviewRunStatus,
+  ReviewRunSummary,
+  ReviewRunUpdate,
   ReviewSummary,
   SourcePreview,
   UpdateRepositoryPreferencesInput,
   UpdateSettingsInput,
 } from '../shared/contracts.js'
-import { CodexAppServerBackend, type ReviewBackend } from './codex-app-server.js'
+import { formatStructuredReviewMarkdown, parseStructuredReview } from '../shared/review-formats.js'
+import {
+  type BackendActivity,
+  CodexAppServerBackend,
+  type ReviewBackend,
+} from './codex-app-server.js'
 import { GitService } from './git-service.js'
+import { createLogger, logError, setDebugLogging } from './logger.js'
 import { SourceService } from './source-service.js'
 import { AppStore } from './storage.js'
+
+const logger = createLogger('service')
 
 const disconnectedAgent: AgentStatus = {
   accountLabel: null,
@@ -25,22 +39,6 @@ const disconnectedAgent: AgentStatus = {
   models: [],
   state: 'unavailable',
   version: null,
-}
-
-function formatInstructions(format: AppSettings['reviewFormat']): string {
-  if (format === 'concise-markdown') {
-    return [
-      'Use concise Markdown.',
-      'Start with a one-sentence verdict, then list only actionable findings in priority order.',
-      'If there are no findings, say so explicitly and keep the report brief.',
-    ].join('\n')
-  }
-  return [
-    'Use Conventional Comments for findings.',
-    'Begin each finding with one of: issue, suggestion, question, thought, praise, or nitpick.',
-    'Add (blocking) or (non-blocking) where useful, followed by a concise subject and explanation.',
-    'Order findings by severity and finish with a short summary.',
-  ].join('\n')
 }
 
 function buildReviewPrompt(
@@ -54,40 +52,32 @@ function buildReviewPrompt(
     'Use only read-only inspection commands. Do not request approvals or expanded permissions.',
     `Inspect the complete change set against ${repository.baseBranch}: committed changes from its merge base to HEAD, staged changes, unstaged changes, and untracked files.`,
     'Focus on concrete defects, regressions, security issues, data loss, broken contracts, and important maintainability risks introduced by these changes.',
-    'Return GitHub-flavoured Markdown only. Never emit raw HTML or internal reasoning.',
-    'Every actionable source location must be linked as `[path:line](shippy://code/path?line=LINE)` or `[path:start-end](shippy://code/path?line=START&end=END)`.',
-    'In those links, `path` must be repository-relative, use forward slashes, percent-encode special characters, and never be absolute or contain `..`.',
+    'Return exactly one JSON object and nothing else. Do not use a Markdown code fence, raw HTML, or internal reasoning.',
+    'The object must match this shape: {"version":1,"summary":"Short overall assessment","findings":[{"priority":"P1","title":"Concise title","bodyMarkdown":"Problem, impact, and actionable recommendation.","locations":[{"path":"src/example.ts","line":42,"endLine":51}],"links":[{"label":"Documentation","url":"https://example.com"}]}]}.',
+    'Do not add fields. locations and links must always be JSON arrays; use an empty links array when there are no external references. endLine is optional for a single-line location.',
+    'Use P0 only for a critical ship blocker such as data loss or a severe security issue. Use P1 for a significant defect or regression that must be fixed before shipping. Use P2 for a concrete medium-priority issue. Use P3 for a small but useful improvement; never report style-only noise.',
+    'Every finding must have at least one actionable location. Paths must be repository-relative, use forward slashes, never be absolute, and never contain `.` or `..` segments.',
+    'bodyMarkdown may use concise GitHub-flavoured Markdown but must not contain headings, raw HTML, repository-location links, or internal Shippy URLs.',
+    'External links are optional. Include only HTTPS URLs that you actually observed or verified during the review; never invent a URL.',
+    'If there are no actionable findings, return an empty findings array and say so briefly in summary.',
     '',
     '# Project review rules',
     projectInstructions ?? 'No additional project-specific review skill was selected.',
-    '',
-    '# Output format',
-    formatInstructions(settings.reviewFormat),
     '',
     '# Personal style',
     settings.personalInstructions.trim() || 'No additional personal instructions.',
   ].join('\n')
 }
 
-function prependMetadata(markdown: string, metadata: ReviewMetadata): string {
-  const branch = metadata.branch ?? 'detached HEAD'
-  return [
-    '# Shippy review',
-    '',
-    `> **Repository:** ${metadata.repositoryName}  `,
-    `> **Branch:** ${branch} → ${metadata.baseBranch}  `,
-    `> **Model:** ${metadata.model} · ${metadata.reasoningEffort}  `,
-    `> **State:** ${metadata.headSha?.slice(0, 12) ?? 'unborn'} · ${metadata.fingerprint.slice(0, 12)}  `,
-    `> **Completed:** ${metadata.completedAt}`,
-    '',
-    '---',
-    '',
-    markdown.trim(),
-    '',
-  ].join('\n')
+interface ActiveRun {
+  itemSequences: Map<string, number>
+  metadata: ReviewRunMetadata
+  nextSequence: number
+  writes: Promise<void>
 }
 
 export class ShippyService {
+  private activeRun: ActiveRun | null = null
   private agent: AgentStatus = disconnectedAgent
   private agentRefresh: Promise<AgentStatus> | null = null
   private readonly backend: ReviewBackend
@@ -100,6 +90,7 @@ export class ShippyService {
   constructor(
     userDataPath: string,
     private readonly publishProgress: (progress: ReviewProgress) => void,
+    private readonly publishActivity: (update: ReviewRunUpdate) => void,
     backend: ReviewBackend = new CodexAppServerBackend(),
   ) {
     this.backend = backend
@@ -108,6 +99,8 @@ export class ShippyService {
 
   async getBootstrap(): Promise<BootstrapState> {
     await this.store.initialize()
+    const settings = await this.store.getSettings()
+    setDebugLogging(settings.debugLoggingEnabled)
     await this.refreshAgent()
     return { agent: this.agent, settings: await this.store.getSettings() }
   }
@@ -160,6 +153,10 @@ export class ShippyService {
     const current = await this.store.getSettings()
     let next: AppSettings = {
       ...current,
+      debugLoggingEnabled:
+        input.debugLoggingEnabled === undefined
+          ? current.debugLoggingEnabled
+          : input.debugLoggingEnabled,
       model: input.model === undefined ? current.model : input.model,
       personalInstructions:
         input.personalInstructions === undefined
@@ -167,7 +164,6 @@ export class ShippyService {
           : input.personalInstructions,
       reasoningEffort:
         input.reasoningEffort === undefined ? current.reasoningEffort : input.reasoningEffort,
-      reviewFormat: input.reviewFormat ?? current.reviewFormat,
     }
     if (input.model !== undefined && input.model !== null) {
       const model = this.agent.models.find((candidate) => candidate.id === input.model)
@@ -193,6 +189,7 @@ export class ShippyService {
       }
     }
     await this.store.saveSettings(next)
+    setDebugLogging(next.debugLoggingEnabled)
     return { agent: this.agent, settings: next }
   }
 
@@ -203,6 +200,8 @@ export class ShippyService {
     await this.store.saveRepositoryPreferences(root, repository.preferences)
     await this.store.rememberRepository(root)
     this.currentRepository = repository
+    logger.info('Repository opened', { repositoryName: repository.name })
+    logger.debug('Repository root', { repositoryRoot: repository.root })
     return repository
   }
 
@@ -269,6 +268,22 @@ export class ShippyService {
     return this.store.listReviews(repository.root, repository.fingerprint)
   }
 
+  async listActivity(): Promise<ReviewRunSummary[]> {
+    const repository = await this.refreshRepository()
+    return this.store.listRuns(repository.root)
+  }
+
+  async readActivity(runId: string): Promise<ReviewRun> {
+    const repository = this.requireRepository()
+    return this.store.readRun(repository.root, runId)
+  }
+
+  async deleteActivity(runId: string): Promise<ReviewRunSummary[]> {
+    const repository = this.requireRepository()
+    await this.store.deleteRun(repository.root, runId)
+    return this.store.listRuns(repository.root)
+  }
+
   async readReview(reviewId: string): Promise<ReviewDocument> {
     const repository = await this.refreshRepository()
     return this.store.readReview(repository.root, reviewId, repository.fingerprint)
@@ -321,14 +336,56 @@ export class ShippyService {
     this.emit('preparing', 'Preparing the repository snapshot…', reviewId)
 
     try {
+      const runMetadata: ReviewRunMetadata = {
+        baseBranch: repository.baseBranch,
+        branch: repository.branch,
+        endedAt: null,
+        error: null,
+        fingerprint: repository.fingerprint,
+        headSha: repository.headSha,
+        id: reviewId,
+        model: settings.model,
+        reasoningEffort: settings.reasoningEffort,
+        repositoryName: repository.name,
+        repositoryRoot: repository.root,
+        reviewId: null,
+        startedAt: createdAt,
+        status: 'preparing',
+      }
+      await this.store.createRun(runMetadata)
+      this.activeRun = {
+        itemSequences: new Map(),
+        metadata: runMetadata,
+        nextSequence: 0,
+        writes: Promise.resolve(),
+      }
+      this.publishActivity({ entry: null, run: runMetadata })
+      const preparingActivityId = randomUUID()
+      await this.recordLifecycle(
+        'Preparing the repository snapshot.',
+        'in-progress',
+        preparingActivityId,
+      )
+      await this.updateActiveRun('running')
+      await this.recordLifecycle('Repository snapshot prepared.', 'completed', preparingActivityId)
+
       const result = await this.backend.startReview({
         model: settings.model,
+        onActivity: (activity) => {
+          void this.recordActivity(activity).catch((activityError: unknown) => {
+            logError('service', 'Could not record Codex activity', activityError)
+          })
+        },
         onProgress: (message) => this.emit('running', message, reviewId),
         prompt: buildReviewPrompt(repository, settings, projectInstructions),
         reasoningEffort: settings.reasoningEffort,
         repositoryRoot: repository.root,
       })
       this.emit('saving', 'Saving the completed review…', reviewId)
+      const savingActivityId = randomUUID()
+      await this.recordLifecycle('Saving the completed review.', 'in-progress', savingActivityId)
+      await this.updateActiveRun('saving')
+      const content = parseStructuredReview(result.markdown)
       const completedAt = new Date().toISOString()
       const metadata: ReviewMetadata = {
         baseBranch: repository.baseBranch,
@@ -336,7 +393,7 @@ export class ShippyService {
         completedAt,
         createdAt,
         fingerprint: repository.fingerprint,
-        format: settings.reviewFormat,
+        format: 'structured-v1',
         headSha: repository.headSha,
         id: reviewId,
         instructionFile: repository.preferences.instructionFile,
@@ -355,21 +412,50 @@ export class ShippyService {
       }
       const document = await this.store.saveReview(
         metadata,
-        prependMetadata(result.markdown, metadata),
+        content,
+        formatStructuredReviewMarkdown(content),
       )
       const current = await this.refreshRepository()
       const completedDocument = {
         ...document,
         stale: current.fingerprint !== metadata.fingerprint,
       }
+      await this.recordLifecycle('Completed review saved.', 'completed', savingActivityId)
+      await this.recordLifecycle('Review completed.', 'completed')
+      await this.updateActiveRun('completed', {
+        endedAt: completedAt,
+        error: null,
+        reviewId,
+      })
       this.emit('completed', 'Review completed.', reviewId)
+      logger.info('Review completed', { reviewId })
       return completedDocument
     } catch (error) {
       const message = error instanceof Error ? error.message : 'The review failed.'
       const cancelled = /cancel/i.test(message)
+      const status = cancelled ? 'cancelled' : 'failed'
+      try {
+        await this.recordLifecycle(cancelled ? 'Review cancelled.' : 'Review failed.', status)
+        await this.updateActiveRun(status, {
+          endedAt: new Date().toISOString(),
+          error: cancelled
+            ? null
+            : 'The review failed. Open the log folder for diagnostic details.',
+          reviewId: null,
+        })
+      } catch (activityError) {
+        logError('service', 'Could not finalize the review activity', activityError)
+      }
       this.emit(cancelled ? 'cancelled' : 'failed', message, reviewId, message)
+      logError('service', cancelled ? 'Review cancelled' : 'Review failed', error)
       throw error
     } finally {
+      try {
+        await this.flushActivity()
+      } catch (error) {
+        logError('service', 'Could not flush review activity', error)
+      }
+      this.activeRun = null
       this.reviewRunning = false
     }
   }
@@ -382,6 +468,7 @@ export class ShippyService {
   }
 
   async stop(): Promise<void> {
+    logger.info('Stopping Shippy services')
     await this.backend.stop()
   }
 
@@ -403,5 +490,64 @@ export class ShippyService {
     error: string | null = null,
   ): void {
     this.publishProgress({ error, message, reviewId, state })
+  }
+
+  private recordActivity(activity: BackendActivity): Promise<void> {
+    const run = this.activeRun
+    if (!run) {
+      return Promise.resolve()
+    }
+    let sequence = run.itemSequences.get(activity.id)
+    if (sequence === undefined) {
+      sequence = run.nextSequence
+      run.nextSequence += 1
+      run.itemSequences.set(activity.id, sequence)
+    }
+    const entry: AgentActivityEntry = {
+      ...activity,
+      runId: run.metadata.id,
+      sequence,
+    }
+    run.writes = run.writes.then(async () => {
+      await this.store.appendRunActivity(run.metadata.repositoryRoot, entry)
+      this.publishActivity({ entry, run: run.metadata })
+    })
+    return run.writes
+  }
+
+  private recordLifecycle(
+    title: string,
+    status: AgentActivityEntry['status'],
+    id = randomUUID(),
+  ): Promise<void> {
+    return this.recordActivity({
+      durationMs: null,
+      exitCode: null,
+      id,
+      kind: 'lifecycle',
+      name: null,
+      occurredAt: new Date().toISOString(),
+      paths: [],
+      status,
+      title,
+    })
+  }
+
+  private async flushActivity(): Promise<void> {
+    await this.activeRun?.writes
+  }
+
+  private async updateActiveRun(
+    status: ReviewRunStatus,
+    changes: Partial<Pick<ReviewRunMetadata, 'endedAt' | 'error' | 'reviewId'>> = {},
+  ): Promise<void> {
+    const run = this.activeRun
+    if (!run) {
+      return
+    }
+    await this.flushActivity()
+    run.metadata = { ...run.metadata, ...changes, status }
+    await this.store.updateRun(run.metadata)
+    this.publishActivity({ entry: null, run: run.metadata })
   }
 }

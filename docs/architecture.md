@@ -14,7 +14,8 @@ Electron main process
     ├── system Git through simple-git
     ├── Codex App Server child process over JSONL stdio
     ├── repository source reads
-    └── atomic JSON and Markdown below Electron userData
+    ├── atomic review and activity records below Electron userData
+    └── rotating local diagnostics below Electron logs
 ```
 
 ## Desktop ownership
@@ -28,16 +29,22 @@ Electron main process
 - `src/main/git-service.ts` uses `simple-git` with main-process-owned argument arrays to resolve Git
   roots, refs, merge bases, and status. It never accepts a command from the renderer.
 - `src/main/codex-app-server.ts` implements the desktop-local `ReviewBackend`, owns one
-  `codex app-server --stdio` process, and consumes only the required protocol events.
-- `src/main/storage.ts` owns atomic settings, repository preferences, recents, and review files.
+  `codex app-server --stdio` process, and projects the required protocol events into safe activity.
+- `src/main/storage.ts` owns atomic settings, repository preferences, recents, reviews, and
+  append-only run activity.
+- `src/main/logger.ts` owns scoped, rotating, local-only diagnostics and their privacy boundary.
 - `src/main/source-service.ts` resolves code references and project instruction files inside the
   canonical repository root.
 - `src/shared/contracts.ts` is the app-local Zod source of truth for IPC inputs, persisted records,
   and renderer-facing types.
+- `src/shared/review-formats.ts` validates structured agent output, derives review status and
+  priority, and generates portable Markdown without platform-specific links.
 - `src/generated/codex-app-server` contains version-specific TypeScript bindings produced by Codex.
   Zod still validates incoming JSON because generated TypeScript types provide no runtime boundary.
-- `src/preload/index.ts` exposes only repository, settings, review, and source-preview operations.
-- `src/renderer` owns browser-safe composition and safe Markdown rendering.
+- `src/preload/index.ts` exposes only repository, settings, review, activity, diagnostics,
+  source-preview, bounded clipboard, and validated external-link operations.
+- `src/renderer` owns browser-safe composition, structured review cards, and safe Markdown
+  rendering inside finding bodies.
 
 The generated bindings use bundler module resolution because Codex emits extensionless TypeScript
 imports. They are excluded from Biome formatting and linting; all maintained source remains under
@@ -71,14 +78,22 @@ loads the normal `AGENTS.md` hierarchy itself.
 
 The custom review instruction order is fixed:
 
-1. non-overridable read-only, scope, Markdown, and `shippy://code` contracts;
+1. non-overridable read-only, scope, structured JSON, priority, and reference contracts;
 2. the selected repository review skill, if any;
-3. the selected output preset; and
-4. personal style instructions.
+3. personal style instructions.
 
-The main process saves a review only after an `exitedReviewMode` Markdown item and a successful turn
-completion. Failed and interrupted runs remain transient. Completed Markdown receives a stable
-Shippy metadata header before persistence.
+Every attempt creates a repository-scoped run record before Codex starts. The UI receives curated
+lifecycle, command, tool, search, subagent, and warning metadata while prompts, reasoning, tool
+arguments, patches, and command output stay out of activity. Started and completed updates for one
+action resolve to one timeline entry. Unfinished records are recovered as interrupted after a
+restart.
+
+The main process accepts the `exitedReviewMode` text only when it contains a valid versioned review
+object. A single outer JSON fence is tolerated; any remaining parse or schema error fails the run
+without creating a review. Valid findings require a P0–P3 priority, concise Markdown body, and at
+least one repository-relative code location. The structured record is authoritative and Shippy
+generates portable Markdown for copying into GitHub or GitLab. Deleting a completed run or review
+removes both linked records; unsuccessful runs have activity only.
 
 Codex App Server is experimental and external. Shippy feature-probes initialization, account, and
 model discovery, validates the consumed event subset, and reports incompatible methods or payloads.
@@ -93,20 +108,33 @@ settings.json
 repositories/<sha256-of-canonical-root>/
 ├── repository.json
 ├── preferences.json
-└── reviews/<uuid>/
+├── reviews/<uuid>/
+│   ├── metadata.json
+│   ├── review.json
+│   └── review.md
+└── runs/<uuid>/
     ├── metadata.json
-    └── review.md
+    └── activity.jsonl
 ```
 
 Settings include recent repositories, an optional explicit Codex executable, model, reasoning
-effort, format, and personal instructions. Repository preferences include the base branch and one
-repository-relative Markdown instruction file. JSON files use write-then-rename replacement. There
-is no database and no file is written to the selected repository.
+effort, personal instructions, and the persistent debug-logging switch. Obsolete persisted format
+preferences are discarded without resetting the remaining settings. Repository preferences include
+the base branch and one repository-relative Markdown instruction file. JSON files use
+write-then-rename replacement; activity is appended immediately so an interrupted run remains
+inspectable. Review directories without `review.json` remain readable as legacy Markdown. There is
+no database and no file is written to the selected repository.
+
+Diagnostics use `electron-log` in the main process. `main.log` rotates at 5 MiB to one archive;
+normal logging starts at `info`, while the persisted setting enables `debug`. Debug may include
+local paths and stack traces, but logs never include repository contents, prompts, reasoning, raw
+App Server messages, tool arguments, or command output. Shippy does not upload logs.
 
 ## Code-reference security
 
-Generated review links use `shippy://code/<repository-relative-path>?line=<line>&end=<line>`. The
-renderer only parses the link into structured arguments. The main process then:
+Structured reviews carry repository-relative path and line records. Legacy reviews may use
+`shippy://code/<repository-relative-path>?line=<line>&end=<line>`. The renderer converts either form
+into structured arguments. The main process then:
 
 - rejects absolute paths, traversal, invalid identifiers, and missing files;
 - canonicalizes both repository and target paths;
@@ -124,8 +152,14 @@ popup denial, webview denial, and navigation blocking. Every renderer argument i
 strict Zod schema in the main process. Git, arbitrary filesystem APIs, subprocess handles, raw App
 Server events, and internal reasoning are never exposed to the renderer.
 
-Markdown is rendered as GitHub-flavoured Markdown without raw HTML. Repository code references are
-handled as in-app actions; other links are displayed without navigation.
+Activity IPC carries only validated Shippy records. Opening the log directory is a pathless main
+process action, and renderer diagnostics accept only bounded error metadata. Clipboard writes are
+bounded text operations. External references must be absolute HTTPS URLs and are opened by the main
+process in the system browser; the renderer never receives general navigation capability.
+
+Finding bodies and legacy reviews are rendered as GitHub-flavoured Markdown without raw HTML.
+Repository code references are handled as in-app actions. HTTPS links use the validated main-process
+operation; unsupported link schemes remain non-interactive.
 
 ## Shared packages and deferred boundaries
 

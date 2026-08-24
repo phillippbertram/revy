@@ -9,6 +9,9 @@ import type {
   RepositoryPreferences,
   RepositorySnapshot,
 } from '../shared/contracts.js'
+import { createLogger } from './logger.js'
+
+const logger = createLogger('git')
 
 const instructionCandidates = [
   '.agents/skills/code-review/SKILL.md',
@@ -86,6 +89,7 @@ function mergeStatus(current: FileChangeStatus, next: FileChangeStatus): FileCha
 
 export class GitService {
   async resolveRepository(selectedPath: string): Promise<string> {
+    logger.debug('Resolving repository', { selectedPath })
     const candidate = await realpath(selectedPath)
     const candidateBare = (await this.run(['rev-parse', '--is-bare-repository'], candidate)).trim()
     if (candidateBare === 'true') {
@@ -132,7 +136,7 @@ export class GitService {
         ? (detectedInstructionFiles[0] ?? null)
         : null
 
-    return {
+    const repository = {
       baseBranch,
       branches,
       branch: branch || null,
@@ -147,6 +151,11 @@ export class GitService {
       },
       root: canonicalRoot,
     }
+    logger.info('Repository inspected', {
+      changeCount: repository.files.length,
+      repositoryName: repository.name,
+    })
+    return repository
   }
 
   async isGitAvailable(): Promise<boolean> {
@@ -158,6 +167,7 @@ export class GitService {
       }).version()
       return true
     } catch {
+      logger.warn('System Git is unavailable')
       return false
     }
   }
@@ -277,6 +287,7 @@ export class GitService {
   }
 
   private async run(args: string[], cwd: string): Promise<string> {
+    logger.debug('Running read-only Git operation', { command: args[0], cwd })
     const git = simpleGit({
       baseDir: cwd,
       maxConcurrentProcesses: 1,
