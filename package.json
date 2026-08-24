@@ -1,0 +1,23 @@
+{
+  "name": "shippy",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A focused desktop app for reviewing changes before they ship.",
+  "engines": {
+    "node": ">=22.12.0",
+    "pnpm": "11.15.1"
+  },
+  "packageManager": "pnpm@11.15.1",
+  "scripts": {
+    "build": "pnpm --filter @shippy/desktop build",
+    "check": "biome check . && pnpm typecheck",
+    "check:fix": "biome check --write . && pnpm typecheck",
+    "dev": "pnpm --filter @shippy/desktop dev",
+    "start": "pnpm --filter @shippy/desktop start",
+    "typecheck": "pnpm --filter @shippy/desktop typecheck"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.9"
+  }
+}
