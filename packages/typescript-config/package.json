@@ -1,9 +1,9 @@
 {
-  "name": "@shippy/typescript-config",
+  "name": "@revy/typescript-config",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Shared TypeScript configurations for Shippy workspaces.",
+  "description": "Shared TypeScript configurations for Revy workspaces.",
   "exports": {
     "./base.json": "./base.json",
     "./node.json": "./node.json",

@@ -1,9 +1,9 @@
 ---
 name: create-commit
-description: Create a focused Shippy Git commit after explicit user authorization. Use when the user asks to stage and commit current changes; do not use for summaries, reviews, pushes, or pull requests alone.
+description: Create a focused Revy Git commit after explicit user authorization. Use when the user asks to stage and commit current changes; do not use for summaries, reviews, pushes, or pull requests alone.
 ---
 
-# Create a Shippy Commit
+# Create a Revy Commit
 
 1. Confirm that the user explicitly requested a commit in the current conversation. A request to
    implement, review, or draft a message is not commit authorization.

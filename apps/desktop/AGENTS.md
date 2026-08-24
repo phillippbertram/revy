@@ -10,4 +10,4 @@
 - Keep filesystem and future Git operations in the main process. Never pass unrestricted paths,
   commands, or Node capabilities to the renderer.
 - Keep the restrictive Content Security Policy and deny unexpected navigation or new windows.
-- Application composition belongs here; reusable components and styles belong in `@shippy/ui`.
+- Application composition belongs here; reusable components and styles belong in `@revy/ui`.

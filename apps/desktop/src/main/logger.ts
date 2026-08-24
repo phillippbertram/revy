@@ -33,7 +33,7 @@ export function initializeLogging(logDirectory: string): void {
     level: 'warn',
     scope: 'electron',
   })
-  log.info('Shippy logging initialized')
+  log.info('Revy logging initialized')
 }
 
 export function setDebugLogging(enabled: boolean): void {

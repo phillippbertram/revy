@@ -1,6 +1,8 @@
-# Shippy
+# Revy
 
-Shippy is a local Electron application for reviewing every change on the current Git branch before
+> Your code deserves a second opinion. Or five.
+
+Revy is a local Electron application for reviewing every change on the current Git branch before
 it ships. It combines committed branch changes with staged, unstaged, and untracked work, then asks
 an existing local Codex installation for a focused, structured review.
 
@@ -26,7 +28,7 @@ The MVP provides:
 - Git available on `PATH`
 - an installed and authenticated Codex CLI (`codex login`)
 
-Codex App Server is an experimental external dependency. Shippy does not install, update,
+Codex App Server is an experimental external dependency. Revy does not install, update,
 authenticate, or modify the configuration of Codex. See the
 [official App Server documentation](https://developers.openai.com/codex/app-server).
 
@@ -75,7 +77,7 @@ External versions are exact and centralized in the pnpm catalog. Shared UI compo
 through the desktop shadcn entrypoint:
 
 ```sh
-pnpm --filter @shippy/desktop exec shadcn add <component>
+pnpm --filter @revy/desktop exec shadcn add <component>
 ```
 
 The checked-in Codex protocol bindings reflect the development CLI version. Regenerate them after
@@ -88,4 +90,4 @@ codex app-server generate-ts --experimental --out ./src/generated/codex-app-serv
 
 ## License
 
-Shippy is available under the [MIT License](LICENSE).
+Revy is available under the [MIT License](LICENSE).

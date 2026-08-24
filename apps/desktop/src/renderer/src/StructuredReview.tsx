@@ -1,6 +1,6 @@
-import { Badge } from '@shippy/ui/components/badge'
-import { Button } from '@shippy/ui/components/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@shippy/ui/components/card'
+import { Badge } from '@revy/ui/components/badge'
+import { Button } from '@revy/ui/components/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@revy/ui/components/card'
 import {
   AlertTriangle,
   Check,

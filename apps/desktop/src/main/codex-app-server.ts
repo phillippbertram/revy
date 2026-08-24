@@ -620,7 +620,7 @@ export class CodexAppServerBackend implements ReviewBackend {
       model: input.model,
       runtimeWorkspaceRoots: [input.repositoryRoot],
       sandbox: 'read-only',
-      serviceName: 'shippy',
+      serviceName: 'revy',
     }
     const threadResult = parseProtocol<ThreadResponseProjection>(
       threadStartResponseSchema,
@@ -733,7 +733,7 @@ export class CodexAppServerBackend implements ReviewBackend {
 
     const initializeParams: InitializeParams = {
       capabilities: { experimentalApi: true, requestAttestation: false },
-      clientInfo: { name: 'shippy', title: 'Shippy', version: '0.0.0' },
+      clientInfo: { name: 'revy', title: 'Revy', version: '0.0.0' },
     }
     await this.request('initialize', initializeParams)
     this.notify('initialized', {})
@@ -773,7 +773,7 @@ export class CodexAppServerBackend implements ReviewBackend {
 
     if (message.id !== undefined && message.method) {
       this.write({
-        error: { code: -32_601, message: 'Shippy does not support server-initiated requests.' },
+        error: { code: -32_601, message: 'Revy does not support server-initiated requests.' },
         id: message.id,
       })
       return

@@ -1,12 +1,6 @@
-import { Badge } from '@shippy/ui/components/badge'
-import { Button } from '@shippy/ui/components/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@shippy/ui/components/card'
+import { Badge } from '@revy/ui/components/badge'
+import { Button } from '@revy/ui/components/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@revy/ui/components/card'
 import {
   Dialog,
   DialogContent,
@@ -14,19 +8,19 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@shippy/ui/components/dialog'
-import { Label } from '@shippy/ui/components/label'
-import { ScrollArea } from '@shippy/ui/components/scroll-area'
+} from '@revy/ui/components/dialog'
+import { Label } from '@revy/ui/components/label'
+import { ScrollArea } from '@revy/ui/components/scroll-area'
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@shippy/ui/components/select'
-import { Separator } from '@shippy/ui/components/separator'
-import { Switch } from '@shippy/ui/components/switch'
-import { Textarea } from '@shippy/ui/components/textarea'
+} from '@revy/ui/components/select'
+import { Separator } from '@revy/ui/components/separator'
+import { Switch } from '@revy/ui/components/switch'
+import { Textarea } from '@revy/ui/components/textarea'
 import {
   AlertTriangle,
   BookOpenText,
@@ -44,11 +38,11 @@ import {
   PanelRightClose,
   RefreshCw,
   Settings2,
-  ShipWheel,
   Square,
   Trash2,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
+import appIconUrl from '../../assets/app-icon.png'
 import type {
   AgentActivityEntry,
   BootstrapState,
@@ -110,7 +104,7 @@ function reportRendererError(
 ): void {
   const error = value instanceof Error ? value : null
   const message = (error?.message || (typeof value === 'string' ? value : fallback)).slice(0, 4_000)
-  window.shippy.reportRendererError({
+  window.revy.reportRendererError({
     kind,
     message: message || fallback,
     stack: error?.stack?.slice(0, 16_000) || null,
@@ -214,13 +208,17 @@ function Sidebar({
 
   return (
     <aside className="flex min-h-0 flex-col border-r bg-card/40">
-      <div className="flex h-16 items-center gap-3 px-5">
-        <span className="flex size-9 items-center justify-center rounded-xl border bg-primary/10 text-primary">
-          <ShipWheel className="size-5" />
-        </span>
-        <div>
-          <p className="text-sm font-semibold tracking-wide">SHIPPY</p>
-          <p className="text-xs text-muted-foreground">Review before you ship</p>
+      <div className="flex min-h-24 items-center gap-3 px-4 py-4">
+        <img
+          alt=""
+          className="size-12 shrink-0 rounded-2xl border object-cover shadow-md shadow-black/30"
+          src={appIconUrl}
+        />
+        <div className="min-w-0">
+          <p className="text-sm font-semibold tracking-wide">REVY</p>
+          <p className="mt-0.5 text-[0.68rem] leading-4 text-muted-foreground">
+            Your code deserves a second opinion. Or five.
+          </p>
         </div>
       </div>
       <div className="px-3 pb-3">
@@ -444,7 +442,7 @@ function RepositorySurface({
           </Badge>
           <h1 className="text-4xl font-semibold tracking-tight">Open a repository to review.</h1>
           <p className="mx-auto mt-4 max-w-md leading-7 text-muted-foreground">
-            Shippy combines branch, staged, unstaged, and untracked changes into one focused Codex
+            Revy combines branch, staged, unstaged, and untracked changes into one focused Codex
             review.
           </p>
           <Button className="mt-7" disabled={busy} onClick={onSelectRepository} size="lg">
@@ -762,7 +760,7 @@ function ReviewsSurface({
               <History className="mx-auto mb-3 size-8 text-muted-foreground/60" />
               <p className="font-medium">Select a review</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                Saved reviews are immutable and stay in Shippy's app data.
+                Saved reviews are immutable and stay in Revy's app data.
               </p>
             </div>
           </div>
@@ -862,7 +860,7 @@ interface SettingsContentProps {
   onChooseExecutable: () => void
   onOpenLogFolder: () => void
   onRefreshAgent: () => void
-  onUpdateSettings: (input: Parameters<typeof window.shippy.updateSettings>[0]) => void
+  onUpdateSettings: (input: Parameters<typeof window.revy.updateSettings>[0]) => void
 }
 
 function SettingsContent({
@@ -886,7 +884,7 @@ function SettingsContent({
             <div>
               <CardTitle>Codex App Server</CardTitle>
               <CardDescription className="mt-2">
-                Experimental local integration. Shippy never installs, updates, or authenticates
+                Experimental local integration. Revy never installs, updates, or authenticates
                 Codex.
               </CardDescription>
             </div>
@@ -923,7 +921,7 @@ function SettingsContent({
           {bootstrap.agent.state !== 'ready' && (
             <p className="text-xs leading-5 text-muted-foreground">
               Install the Codex CLI, run{' '}
-              <code className="rounded bg-muted px-1 py-0.5">codex login</code>, then retry. Shippy
+              <code className="rounded bg-muted px-1 py-0.5">codex login</code>, then retry. Revy
               does not change{' '}
               <code className="rounded bg-muted px-1 py-0.5">~/.codex/config.toml</code>.
             </p>
@@ -935,7 +933,7 @@ function SettingsContent({
         <CardHeader>
           <CardTitle>Diagnostics</CardTitle>
           <CardDescription>
-            Local rotating logs help diagnose Shippy, Electron, Git, and Codex connection failures.
+            Local rotating logs help diagnose Revy, Electron, Git, and Codex connection failures.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -956,7 +954,7 @@ function SettingsContent({
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-xs leading-5 text-muted-foreground">
-              Shippy keeps one 5 MiB log and one rotated archive on this computer.
+              Revy keeps one 5 MiB log and one rotated archive on this computer.
             </p>
             <Button disabled={busy} onClick={onOpenLogFolder} variant="outline">
               <FolderOpen />
@@ -1068,7 +1066,7 @@ export function App() {
   )
 
   useEffect(() => {
-    const unsubscribe = window.shippy.onReviewProgress(setProgress)
+    const unsubscribe = window.revy.onReviewProgress(setProgress)
     const onError = (event: ErrorEvent): void =>
       reportRendererError('error', event.error ?? event.message, 'Renderer error')
     const onUnhandledRejection = (event: PromiseRejectionEvent): void =>
@@ -1077,9 +1075,9 @@ export function App() {
     window.addEventListener('unhandledrejection', onUnhandledRejection)
     void (async () => {
       try {
-        setBootstrap(unwrapResult(await window.shippy.getBootstrap()))
+        setBootstrap(unwrapResult(await window.revy.getBootstrap()))
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : 'Shippy could not start.')
+        setError(caught instanceof Error ? caught.message : 'Revy could not start.')
       }
     })()
     return () => {
@@ -1110,7 +1108,7 @@ export function App() {
     if (!repository) {
       return undefined
     }
-    return window.shippy.onActivityUpdate((update) => {
+    return window.revy.onActivityUpdate((update) => {
       if (update.run.repositoryRoot !== repository.root) {
         return
       }
@@ -1138,18 +1136,18 @@ export function App() {
   }
 
   async function refreshHistory(openLatest = false): Promise<void> {
-    const nextReviews = unwrapResult(await window.shippy.listReviews())
+    const nextReviews = unwrapResult(await window.revy.listReviews())
     setReviews(nextReviews)
     if (openLatest && nextReviews[0]) {
-      setReview(unwrapResult(await window.shippy.readReview(nextReviews[0].id)))
+      setReview(unwrapResult(await window.revy.readReview(nextReviews[0].id)))
     }
   }
 
   async function refreshActivity(openLatest = false): Promise<void> {
-    const nextRuns = unwrapResult(await window.shippy.listActivity())
+    const nextRuns = unwrapResult(await window.revy.listActivity())
     setRuns(nextRuns)
     if (openLatest && nextRuns[0]) {
-      setActivity(unwrapResult(await window.shippy.readActivity(nextRuns[0].id)))
+      setActivity(unwrapResult(await window.revy.readActivity(nextRuns[0].id)))
     }
   }
 
@@ -1166,20 +1164,20 @@ export function App() {
 
   async function openRepository(): Promise<void> {
     await run(async () => {
-      const selected = unwrapResult(await window.shippy.selectRepository())
+      const selected = unwrapResult(await window.revy.selectRepository())
       if (!selected) {
         return
       }
       acceptRepository(selected)
       await Promise.all([refreshHistory(), refreshActivity()])
-      setBootstrap(unwrapResult(await window.shippy.updateSettings({})))
+      setBootstrap(unwrapResult(await window.revy.updateSettings({})))
       setSurface('repository')
     })
   }
 
   async function openRecent(path: string): Promise<void> {
     await run(async () => {
-      acceptRepository(unwrapResult(await window.shippy.openRecentRepository(path)))
+      acceptRepository(unwrapResult(await window.revy.openRecentRepository(path)))
       await Promise.all([refreshHistory(), refreshActivity()])
       setSurface('repository')
     })
@@ -1187,14 +1185,14 @@ export function App() {
 
   async function refreshRepository(): Promise<void> {
     await run(async () => {
-      acceptRepository(unwrapResult(await window.shippy.refreshRepository()))
+      acceptRepository(unwrapResult(await window.revy.refreshRepository()))
       await Promise.all([refreshHistory(), refreshActivity()])
     })
   }
 
   async function updateBase(baseBranch: string): Promise<void> {
     await run(async () => {
-      setRepository(unwrapResult(await window.shippy.refreshRepository(baseBranch)))
+      setRepository(unwrapResult(await window.revy.refreshRepository(baseBranch)))
       await Promise.all([refreshHistory(), refreshActivity()])
     })
   }
@@ -1202,14 +1200,14 @@ export function App() {
   async function updateInstructions(instructionFile: string | null): Promise<void> {
     await run(async () => {
       setRepository(
-        unwrapResult(await window.shippy.updateRepositoryPreferences({ instructionFile })),
+        unwrapResult(await window.revy.updateRepositoryPreferences({ instructionFile })),
       )
     })
   }
 
   async function chooseInstructions(): Promise<void> {
     await run(async () => {
-      setRepository(unwrapResult(await window.shippy.selectInstructionFile()))
+      setRepository(unwrapResult(await window.revy.selectInstructionFile()))
     })
   }
 
@@ -1220,7 +1218,7 @@ export function App() {
     setError(null)
     try {
       const document = unwrapResult(
-        await window.shippy.startReview({
+        await window.revy.startReview({
           baseBranch: repository.baseBranch,
           userStory: userStory.trim() || null,
         }),
@@ -1228,7 +1226,7 @@ export function App() {
       setUserStory('')
       setReview(document)
       setSource(null)
-      setRepository(unwrapResult(await window.shippy.refreshRepository()))
+      setRepository(unwrapResult(await window.revy.refreshRepository()))
       await Promise.all([refreshHistory(), refreshActivity()])
       setSurface('reviews')
     } catch (caught) {
@@ -1241,13 +1239,13 @@ export function App() {
 
   async function cancelReview(): Promise<void> {
     await run(async () => {
-      unwrapResult(await window.shippy.cancelReview())
+      unwrapResult(await window.revy.cancelReview())
     })
   }
 
   async function openReview(id: string): Promise<void> {
     await run(async () => {
-      setReview(unwrapResult(await window.shippy.readReview(id)))
+      setReview(unwrapResult(await window.revy.readReview(id)))
       setSource(null)
     })
   }
@@ -1257,9 +1255,9 @@ export function App() {
       return
     }
     await run(async () => {
-      const nextReviews = unwrapResult(await window.shippy.deleteReview(id))
+      const nextReviews = unwrapResult(await window.revy.deleteReview(id))
       setReviews(nextReviews)
-      setRuns(unwrapResult(await window.shippy.listActivity()))
+      setRuns(unwrapResult(await window.revy.listActivity()))
       setActivity((current) => (current?.metadata.id === id ? null : current))
       setReview(null)
       setSource(null)
@@ -1268,7 +1266,7 @@ export function App() {
 
   async function openActivity(id: string): Promise<void> {
     await run(async () => {
-      setActivity(unwrapResult(await window.shippy.readActivity(id)))
+      setActivity(unwrapResult(await window.revy.readActivity(id)))
     })
   }
 
@@ -1277,7 +1275,7 @@ export function App() {
       return
     }
     await run(async () => {
-      setRuns(unwrapResult(await window.shippy.deleteActivity(id)))
+      setRuns(unwrapResult(await window.revy.deleteActivity(id)))
       setActivity(null)
       await refreshHistory()
     })
@@ -1295,7 +1293,7 @@ export function App() {
     await run(async () => {
       setSource(
         unwrapResult(
-          await window.shippy.readSource({
+          await window.revy.readSource({
             endLine: reference.endLine,
             line: reference.line,
             path: reference.path,
@@ -1309,7 +1307,7 @@ export function App() {
   async function copyText(text: string): Promise<boolean> {
     setError(null)
     try {
-      unwrapResult(await window.shippy.copyText(text))
+      unwrapResult(await window.revy.copyText(text))
       return true
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'The review could not be copied.')
@@ -1320,7 +1318,7 @@ export function App() {
   async function openExternal(url: string): Promise<void> {
     setError(null)
     try {
-      unwrapResult(await window.shippy.openExternal(url))
+      unwrapResult(await window.revy.openExternal(url))
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'The external link could not be opened.')
     }
@@ -1328,29 +1326,29 @@ export function App() {
 
   async function refreshAgent(): Promise<void> {
     await run(async () => {
-      unwrapResult(await window.shippy.refreshAgent())
-      setBootstrap(unwrapResult(await window.shippy.updateSettings({})))
+      unwrapResult(await window.revy.refreshAgent())
+      setBootstrap(unwrapResult(await window.revy.updateSettings({})))
     })
   }
 
   async function chooseExecutable(): Promise<void> {
     await run(async () => {
-      unwrapResult(await window.shippy.chooseCodexExecutable())
-      setBootstrap(unwrapResult(await window.shippy.updateSettings({})))
+      unwrapResult(await window.revy.chooseCodexExecutable())
+      setBootstrap(unwrapResult(await window.revy.updateSettings({})))
     })
   }
 
   async function updateSettings(
-    input: Parameters<typeof window.shippy.updateSettings>[0],
+    input: Parameters<typeof window.revy.updateSettings>[0],
   ): Promise<void> {
     await run(async () => {
-      setBootstrap(unwrapResult(await window.shippy.updateSettings(input)))
+      setBootstrap(unwrapResult(await window.revy.updateSettings(input)))
     })
   }
 
   async function openLogFolder(): Promise<void> {
     await run(async () => {
-      unwrapResult(await window.shippy.openLogFolder())
+      unwrapResult(await window.revy.openLogFolder())
     })
   }
 
@@ -1379,8 +1377,12 @@ export function App() {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background text-foreground">
         <div className="text-center">
-          <ShipWheel className="mx-auto mb-4 size-8 animate-pulse text-primary" />
-          <p className="text-sm text-muted-foreground">Starting Shippy…</p>
+          <img
+            alt=""
+            className="mx-auto mb-4 size-16 animate-pulse rounded-2xl shadow-lg shadow-black/30"
+            src={appIconUrl}
+          />
+          <p className="text-sm text-muted-foreground">Starting Revy…</p>
         </div>
       </main>
     )

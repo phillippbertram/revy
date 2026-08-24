@@ -1,7 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from '@/App'
-import '@shippy/ui/globals.css'
+import '@revy/ui/globals.css'
 
 const rootElement = document.getElementById('root')
 

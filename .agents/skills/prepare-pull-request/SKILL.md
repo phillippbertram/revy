@@ -1,9 +1,9 @@
 ---
 name: prepare-pull-request
-description: Prepare a Shippy pull-request title and description from committed branch changes. Use when the user asks for PR wording or a branch summary; keep uncommitted work separate and do not publish without explicit authorization.
+description: Prepare a Revy pull-request title and description from committed branch changes. Use when the user asks for PR wording or a branch summary; keep uncommitted work separate and do not publish without explicit authorization.
 ---
 
-# Prepare a Shippy Pull Request
+# Prepare a Revy Pull Request
 
 1. Inspect Git status and identify the requested base branch, defaulting to `main` only when no
    other base is established.

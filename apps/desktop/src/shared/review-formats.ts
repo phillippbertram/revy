@@ -112,7 +112,7 @@ export function formatStructuredReviewMarkdown(review: StructuredReview): string
 
 export function formatLegacyReviewMarkdown(markdown: string): string {
   const trimmed = markdown.trim()
-  if (!trimmed.startsWith('# Shippy review')) {
+  if (!trimmed.startsWith('# Revy review')) {
     return trimmed
   }
   const separator = '\n---\n'

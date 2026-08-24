@@ -1,5 +1,5 @@
 {
-  "extends": "@shippy/typescript-config/base.json",
+  "extends": "@revy/typescript-config/base.json",
   "files": [],
   "compilerOptions": {
     "paths": {

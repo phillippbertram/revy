@@ -1,5 +1,5 @@
 {
-  "extends": "@shippy/typescript-config/react.json",
+  "extends": "@revy/typescript-config/react.json",
   "compilerOptions": {
     "composite": true,
     "noEmit": true,

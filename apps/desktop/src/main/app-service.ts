@@ -50,7 +50,7 @@ function buildReviewPrompt(
   userStory: string | null,
 ): string {
   return [
-    '# Shippy review contract (highest priority)',
+    '# Revy review contract (highest priority)',
     'Review only. Do not edit, create, delete, format, stage, commit, or otherwise modify any repository file or Git state.',
     'Use only read-only inspection commands. Do not request approvals or expanded permissions.',
     `Inspect the complete change set against ${repository.baseBranch}: committed changes from its merge base to HEAD, staged changes, unstaged changes, and untracked files.`,
@@ -60,7 +60,7 @@ function buildReviewPrompt(
     'Do not add fields. locations and links must always be JSON arrays; use an empty links array when there are no external references. endLine is optional for a single-line location.',
     'Use P0 only for a critical ship blocker such as data loss or a severe security issue. Use P1 for a significant defect or regression that must be fixed before shipping. Use P2 for a concrete medium-priority issue. Use P3 for a small but useful improvement; never report style-only noise.',
     'Every finding must have at least one actionable location. Paths must be repository-relative, use forward slashes, never be absolute, and never contain `.` or `..` segments.',
-    'bodyMarkdown may use concise GitHub-flavoured Markdown but must not contain headings, raw HTML, repository-location links, or internal Shippy URLs.',
+    'bodyMarkdown may use concise GitHub-flavoured Markdown but must not contain headings, raw HTML, repository-location links, or internal Revy URLs.',
     'External links are optional. Include only HTTPS URLs that you actually observed or verified during the review; never invent a URL.',
     'If there are no actionable findings, return an empty findings array and say so briefly in summary.',
     ...(userStory
@@ -89,7 +89,7 @@ interface ActiveRun {
   writes: Promise<void>
 }
 
-export class ShippyService {
+export class RevyService {
   private activeRun: ActiveRun | null = null
   private agent: AgentStatus = disconnectedAgent
   private agentRefresh: Promise<AgentStatus> | null = null
@@ -483,7 +483,7 @@ export class ShippyService {
   }
 
   async stop(): Promise<void> {
-    logger.info('Stopping Shippy services')
+    logger.info('Stopping Revy services')
     await this.backend.stop()
   }
 

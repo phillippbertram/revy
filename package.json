@@ -1,5 +1,5 @@
 {
-  "name": "shippy",
+  "name": "revy",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -14,9 +14,9 @@
     "check": "biome check . && pnpm typecheck",
     "check:fix": "biome check --write . && pnpm typecheck",
     "dev": "pnpm dev:desktop",
-    "dev:desktop": "pnpm --filter @shippy/desktop dev",
+    "dev:desktop": "pnpm --filter @revy/desktop dev",
     "start": "pnpm start:desktop",
-    "start:desktop": "pnpm --filter @shippy/desktop start",
+    "start:desktop": "pnpm --filter @revy/desktop start",
     "typecheck": "pnpm --recursive --if-present typecheck"
   },
   "devDependencies": {

@@ -1,9 +1,9 @@
 {
-  "name": "@shippy/ui",
+  "name": "@revy/ui",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Shared React components and styles for Shippy applications.",
+  "description": "Shared React components and styles for Revy applications.",
   "imports": {
     "#components/*": "./src/components/*.tsx",
     "#hooks/*": "./src/hooks/*.ts",
@@ -30,7 +30,7 @@
     "react-dom": "catalog:"
   },
   "devDependencies": {
-    "@shippy/typescript-config": "workspace:*",
+    "@revy/typescript-config": "workspace:*",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "react": "catalog:",

@@ -1,11 +1,11 @@
 # Architecture
 
-Shippy is a local, read-only Electron application in a pnpm workspace. Platform capabilities stay
+Revy is a local, read-only Electron application in a pnpm workspace. Platform capabilities stay
 behind Electron's security boundary; the renderer only receives validated product data.
 
 ```text
 renderer UI
-    │ narrow window.shippy API
+    │ narrow window.revy API
     ▼
 sandboxed preload
     │ typed, Zod-validated IPC
@@ -72,7 +72,7 @@ that fingerprint so history can report when either the branch or worktree has ch
 
 ## Review lifecycle
 
-Only one run may be active. Shippy creates an ephemeral Codex thread rooted at the repository with
+Only one run may be active. Revy creates an ephemeral Codex thread rooted at the repository with
 `read-only` sandboxing, no approvals, the selected model, and its supported reasoning effort. Codex
 loads the normal `AGENTS.md` hierarchy itself.
 
@@ -96,11 +96,11 @@ restart.
 The main process accepts the `exitedReviewMode` text only when it contains a valid versioned review
 object. A single outer JSON fence is tolerated; any remaining parse or schema error fails the run
 without creating a review. Valid findings require a P0–P3 priority, concise Markdown body, and at
-least one repository-relative code location. The structured record is authoritative and Shippy
+least one repository-relative code location. The structured record is authoritative and Revy
 generates portable Markdown for copying into GitHub or GitLab. Deleting a completed run or review
 removes both linked records; unsuccessful runs have activity only.
 
-Codex App Server is experimental and external. Shippy feature-probes initialization, account, and
+Codex App Server is experimental and external. Revy feature-probes initialization, account, and
 model discovery, validates the consumed event subset, and reports incompatible methods or payloads.
 It does not automatically restart a crashed server; a later explicit retry may start a new process.
 
@@ -136,12 +136,12 @@ selected repository.
 Diagnostics use `electron-log` in the main process. `main.log` rotates at 5 MiB to one archive;
 normal logging starts at `info`, while the persisted setting enables `debug`. Debug may include
 local paths and stack traces, but logs never include repository contents, prompts, reasoning, raw
-App Server messages, user stories, tool arguments, or command output. Shippy does not upload logs.
+App Server messages, user stories, tool arguments, or command output. Revy does not upload logs.
 
 ## Code-reference security
 
 Structured reviews carry repository-relative path and line records. Legacy reviews may use
-`shippy://code/<repository-relative-path>?line=<line>&end=<line>`. The renderer converts either form
+`revy://code/<repository-relative-path>?line=<line>&end=<line>`. The renderer converts either form
 into structured arguments. The main process then:
 
 - rejects absolute paths, traversal, invalid identifiers, and missing files;
@@ -160,7 +160,7 @@ popup denial, webview denial, and navigation blocking. Every renderer argument i
 strict Zod schema in the main process. Git, arbitrary filesystem APIs, subprocess handles, raw App
 Server events, and internal reasoning are never exposed to the renderer.
 
-Activity IPC carries only validated Shippy records. Opening the log directory is a pathless main
+Activity IPC carries only validated Revy records. Opening the log directory is a pathless main
 process action, and renderer diagnostics accept only bounded error metadata. Clipboard writes are
 bounded text operations. External references must be absolute HTTPS URLs and are opened by the main
 process in the system browser; the renderer never receives general navigation capability.
@@ -171,8 +171,8 @@ operation; unsupported link schemes remain non-interactive.
 
 ## Shared packages and deferred boundaries
 
-`@shippy/ui` owns framework-neutral React components, theme tokens, and base styles that remain
-usable by a future Next.js application. `@shippy/typescript-config` owns strict shared TypeScript
+`@revy/ui` owns framework-neutral React components, theme tokens, and base styles that remain
+usable by a future Next.js application. `@revy/typescript-config` owns strict shared TypeScript
 defaults. Packages never depend on applications, and consumers use declared package exports.
 
 No provider-agnostic adapter package exists yet because Codex is the only backend. A later second

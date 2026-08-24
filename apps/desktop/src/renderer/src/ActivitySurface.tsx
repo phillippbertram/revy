@@ -1,6 +1,6 @@
-import { Badge } from '@shippy/ui/components/badge'
-import { Button } from '@shippy/ui/components/button'
-import { ScrollArea } from '@shippy/ui/components/scroll-area'
+import { Badge } from '@revy/ui/components/badge'
+import { Button } from '@revy/ui/components/button'
+import { ScrollArea } from '@revy/ui/components/scroll-area'
 import {
   AlertTriangle,
   Bot,

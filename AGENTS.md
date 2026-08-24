@@ -1,8 +1,8 @@
-# Shippy Agent Instructions
+# Revy Agent Instructions
 
 ## Project
 
-- Shippy is a public desktop application for reviewing the changes on a repository's current
+- Revy is a public desktop application for reviewing the changes on a repository's current
   branch before they ship.
 - The product is currently a foundation only. Do not implement repository selection, Git access,
   IPC, persistence, packaging, or a web application unless the task explicitly requests it.

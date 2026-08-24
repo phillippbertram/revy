@@ -1,4 +1,4 @@
 interface:
   display_name: "Add Workspace Package"
-  short_description: "Add a package using Shippy workspace conventions"
-  default_prompt: "Use $add-workspace-package to add a well-bounded workspace to Shippy."
+  short_description: "Add a package using Revy workspace conventions"
+  default_prompt: "Use $add-workspace-package to add a well-bounded workspace to Revy."

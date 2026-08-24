@@ -1,4 +1,4 @@
 interface:
   display_name: "Create Commit"
-  short_description: "Validate and create a focused Shippy commit"
-  default_prompt: "Use $create-commit to validate and commit the intended Shippy changes."
+  short_description: "Validate and create a focused Revy commit"
+  default_prompt: "Use $create-commit to validate and commit the intended Revy changes."

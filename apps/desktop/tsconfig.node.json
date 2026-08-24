@@ -1,5 +1,5 @@
 {
-  "extends": "@shippy/typescript-config/node.json",
+  "extends": "@revy/typescript-config/node.json",
   "compilerOptions": {
     "composite": true,
     "module": "ESNext",

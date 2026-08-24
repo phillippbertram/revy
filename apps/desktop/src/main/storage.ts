@@ -495,7 +495,7 @@ export class AppStore {
         const metadata: ReviewRunMetadata = {
           ...parsed.data,
           endedAt,
-          error: reviewExists ? null : 'Shippy closed before the review run finished.',
+          error: reviewExists ? null : 'Revy closed before the review run finished.',
           reviewId: reviewExists ? parsed.data.id : null,
           status: reviewExists ? 'completed' : 'interrupted',
         }
@@ -513,8 +513,8 @@ export class AppStore {
           sequence: (activity.at(-1)?.sequence ?? -1) + 1,
           status: reviewExists ? 'completed' : 'interrupted',
           title: reviewExists
-            ? 'Review completed before Shippy closed.'
-            : 'Review interrupted when Shippy closed.',
+            ? 'Review completed before Revy closed.'
+            : 'Review interrupted when Revy closed.',
         }
         await appendFile(join(runDirectory, 'activity.jsonl'), `${JSON.stringify(entry)}\n`, 'utf8')
         recovered += 1

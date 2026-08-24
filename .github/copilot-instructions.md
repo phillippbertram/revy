@@ -1,4 +1,4 @@
-# Shippy Copilot Adapter
+# Revy Copilot Adapter
 
 Read and follow `/AGENTS.md` before working in this repository. When editing a nested workspace,
 also follow the nearest `AGENTS.md`; it takes precedence for that directory. These files are the

@@ -1,6 +1,6 @@
 ---
 name: add-shadcn-component
-description: Add or update shadcn components in the Shippy monorepo. Use when the user requests a shared UI primitive, shadcn block, component dependency, or theme-compatible component change.
+description: Add or update shadcn components in the Revy monorepo. Use when the user requests a shared UI primitive, shadcn block, component dependency, or theme-compatible component change.
 ---
 
 # Add a shadcn Component
@@ -10,14 +10,14 @@ description: Add or update shadcn components in the Shippy monorepo. Use when th
 2. From the repository root, run:
 
    ```sh
-   pnpm --filter @shippy/desktop exec shadcn add <component>
+   pnpm --filter @revy/desktop exec shadcn add <component>
    ```
 
 3. Inspect the resulting diff immediately. Reusable primitives, their utilities, and their direct
-   dependencies belong to `@shippy/ui`; application composition belongs to `apps/desktop`.
+   dependencies belong to `@revy/ui`; application composition belongs to `apps/desktop`.
 4. Keep the style, icon library, base color, aliases, and shared stylesheet aligned across both
    shadcn configurations.
-5. Ensure every shared consumer import uses an exported `@shippy/ui/...` subpath. Add or adjust the
+5. Ensure every shared consumer import uses an exported `@revy/ui/...` subpath. Add or adjust the
    package export when the CLI creates a new public directory.
 6. Preserve accessibility and framework neutrality. Do not introduce Electron or Next.js imports
    into the UI package.

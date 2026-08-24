@@ -10,6 +10,7 @@ import {
   shell,
 } from 'electron'
 import { z } from 'zod'
+import appIconPath from '../assets/app-icon.png?asset'
 import {
   clipboardTextSchema,
   externalUrlSchema,
@@ -26,7 +27,7 @@ import {
   updateRepositoryPreferencesInputSchema,
   updateSettingsInputSchema,
 } from '../shared/contracts.js'
-import { ShippyService } from './app-service.js'
+import { RevyService } from './app-service.js'
 import { createLogger, initializeLogging, logError } from './logger.js'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
@@ -34,13 +35,13 @@ const authorName = 'Phillipp Bertram'
 const repositoryUrl = 'https://github.com/phillippbertram/shippy'
 const logger = createLogger('main')
 let mainWindow: BrowserWindow | null = null
-let service: ShippyService | null = null
+let service: RevyService | null = null
 
 function messageFromError(error: unknown): string {
   if (error instanceof z.ZodError) {
     return `Invalid request: ${error.issues.at(0)?.message ?? 'validation failed'}`
   }
-  return error instanceof Error ? error.message : 'Shippy could not complete the request.'
+  return error instanceof Error ? error.message : 'Revy could not complete the request.'
 }
 
 async function result<T>(operation: () => Promise<T>): Promise<Result<T>> {
@@ -52,9 +53,9 @@ async function result<T>(operation: () => Promise<T>): Promise<Result<T>> {
   }
 }
 
-function requireService(): ShippyService {
+function requireService(): RevyService {
   if (!service) {
-    throw new Error('Shippy is still starting.')
+    throw new Error('Revy is still starting.')
   }
   return service
 }
@@ -146,7 +147,7 @@ function registerIpc(): void {
     result(async () => {
       const error = await shell.openPath(app.getPath('logs'))
       if (error) {
-        throw new Error('Shippy could not open the log folder.')
+        throw new Error('Revy could not open the log folder.')
       }
       return null
     }),
@@ -198,10 +199,11 @@ function createWindow(): void {
     autoHideMenuBar: true,
     backgroundColor: '#09090b',
     height: 820,
+    icon: appIconPath,
     minHeight: 600,
     minWidth: 860,
     show: false,
-    title: 'Shippy',
+    title: 'Revy',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -234,19 +236,20 @@ function createWindow(): void {
   }
 }
 
-app.setName('Shippy')
+app.setName('Revy')
 initializeLogging(app.getPath('logs'))
 
 void app.whenReady().then(() => {
+  app.dock?.setIcon(appIconPath)
   app.setAboutPanelOptions({
-    applicationName: 'Shippy',
+    applicationName: 'Revy',
     applicationVersion: app.getVersion(),
     authors: [authorName],
     credits: `Author: ${authorName}\nGitHub: ${repositoryUrl}`,
     website: repositoryUrl,
   })
-  logger.info('Shippy app ready')
-  service = new ShippyService(
+  logger.info('Revy app ready')
+  service = new RevyService(
     app.getPath('userData'),
     (progress) => {
       const validated = reviewProgressSchema.safeParse(progress)
@@ -272,7 +275,7 @@ void app.whenReady().then(() => {
 })
 
 app.on('before-quit', () => {
-  logger.info('Shippy app quitting')
+  logger.info('Revy app quitting')
   void service?.stop()
 })
 

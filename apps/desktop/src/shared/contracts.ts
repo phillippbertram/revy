@@ -171,10 +171,7 @@ export const reviewFindingSchema = z
       .trim()
       .min(1)
       .max(12_000)
-      .refine(
-        (value) => !value.includes('shippy://'),
-        'Finding bodies cannot contain Shippy URLs.',
-      ),
+      .refine((value) => !value.includes('revy://'), 'Finding bodies cannot contain Revy URLs.'),
     links: z.array(reviewExternalLinkSchema).max(8),
     locations: z.array(reviewLocationSchema).min(1).max(8),
     priority: reviewPrioritySchema,
@@ -411,7 +408,7 @@ export const externalUrlSchema = z
   .max(2_048)
   .refine((value) => new URL(value).protocol === 'https:', 'Only HTTPS links are supported.')
 
-export interface ShippyApi {
+export interface RevyApi {
   cancelReview(): Promise<Result<null>>
   chooseCodexExecutable(): Promise<Result<AgentStatus>>
   copyText(text: string): Promise<Result<null>>

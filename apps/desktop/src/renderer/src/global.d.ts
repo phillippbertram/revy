@@ -1,7 +1,7 @@
-import type { ShippyApi } from '../../shared/contracts.js'
+import type { RevyApi } from '../../shared/contracts.js'
 
 declare global {
   interface Window {
-    shippy: ShippyApi
+    revy: RevyApi
   }
 }

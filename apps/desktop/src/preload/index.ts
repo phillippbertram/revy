@@ -1,12 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import {
   ipcChannels,
+  type RevyApi,
   reviewProgressSchema,
   reviewRunUpdateSchema,
-  type ShippyApi,
 } from '../shared/contracts.js'
 
-const api: ShippyApi = {
+const api: RevyApi = {
   cancelReview: () => ipcRenderer.invoke(ipcChannels.reviewCancel),
   chooseCodexExecutable: () => ipcRenderer.invoke(ipcChannels.agentChooseExecutable),
   copyText: (text) => ipcRenderer.invoke(ipcChannels.clipboardWrite, text),
@@ -52,4 +52,4 @@ const api: ShippyApi = {
   updateSettings: (input) => ipcRenderer.invoke(ipcChannels.settingsUpdate, input),
 }
 
-contextBridge.exposeInMainWorld('shippy', api)
+contextBridge.exposeInMainWorld('revy', api)

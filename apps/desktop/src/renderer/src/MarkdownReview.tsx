@@ -15,12 +15,12 @@ interface MarkdownReviewProps {
 }
 
 function parseCodeReference(href: string | undefined): CodeReference | null {
-  if (!href?.startsWith('shippy://code/')) {
+  if (!href?.startsWith('revy://code/')) {
     return null
   }
   try {
     const url = new URL(href)
-    if (url.protocol !== 'shippy:' || url.hostname !== 'code') {
+    if (url.protocol !== 'revy:' || url.hostname !== 'code') {
       return null
     }
     const path = decodeURIComponent(url.pathname.slice(1))
