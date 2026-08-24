@@ -20,12 +20,16 @@ import {
   readSourceInputSchema,
   recentRepositoryInputSchema,
   rendererDiagnosticInputSchema,
+  reviewerProfileIdSchema,
   reviewIdSchema,
   reviewProgressSchema,
   reviewRunUpdateSchema,
+  saveReviewerProfileInputSchema,
+  saveReviewWorkflowInputSchema,
   startReviewInputSchema,
   updateRepositoryPreferencesInputSchema,
   updateSettingsInputSchema,
+  workflowIdSchema,
 } from '../shared/contracts.js'
 import { RevyService } from './app-service.js'
 import { createLogger, initializeLogging, logError } from './logger.js'
@@ -142,6 +146,18 @@ function registerIpc(): void {
 
   ipcMain.handle(ipcChannels.settingsUpdate, (_event, input: unknown) =>
     result(() => requireService().updateSettings(updateSettingsInputSchema.parse(input))),
+  )
+  ipcMain.handle(ipcChannels.reviewerProfileSave, (_event, input: unknown) =>
+    result(() => requireService().saveReviewerProfile(saveReviewerProfileInputSchema.parse(input))),
+  )
+  ipcMain.handle(ipcChannels.reviewerProfileDelete, (_event, input: unknown) =>
+    result(() => requireService().deleteReviewerProfile(reviewerProfileIdSchema.parse(input))),
+  )
+  ipcMain.handle(ipcChannels.workflowSave, (_event, input: unknown) =>
+    result(() => requireService().saveWorkflow(saveReviewWorkflowInputSchema.parse(input))),
+  )
+  ipcMain.handle(ipcChannels.workflowDelete, (_event, input: unknown) =>
+    result(() => requireService().deleteWorkflow(workflowIdSchema.parse(input))),
   )
   ipcMain.handle(ipcChannels.diagnosticsOpenLogFolder, () =>
     result(async () => {

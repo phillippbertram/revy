@@ -12,7 +12,7 @@ sandboxed preload
     ▼
 Electron main process
     ├── system Git through simple-git
-    ├── Codex App Server child process over JSONL stdio
+    ├── Codex App Server processes over JSONL stdio
     ├── repository source reads
     ├── atomic review and activity records below Electron userData
     └── rotating local diagnostics below Electron logs
@@ -24,12 +24,13 @@ Electron main process
 
 - `src/main/index.ts` creates the window, blocks navigation and popups, registers the narrow IPC
   surface, opens native file pickers, and publishes high-level review progress.
-- `src/main/app-service.ts` coordinates the active repository, settings, reviews, and the single
-  active run.
+- `src/main/app-service.ts` resolves immutable review plans and coordinates the active repository,
+  settings, reviews, and the single active run.
 - `src/main/git-service.ts` uses `simple-git` with main-process-owned argument arrays to resolve Git
   roots, refs, merge bases, and status. It never accepts a command from the renderer.
-- `src/main/codex-app-server.ts` implements the desktop-local `ReviewBackend`, owns one
-  `codex app-server --stdio` process, and projects the required protocol events into safe activity.
+- `src/main/codex-app-server.ts` implements the desktop-local `ReviewBackend`, owns the coordinator
+  App Server and bounded reviewer App Servers, and projects the required protocol events into safe
+  activity.
 - `src/main/storage.ts` owns atomic settings, repository preferences, recents, reviews, and
   append-only run activity.
 - `src/main/logger.ts` owns scoped, rotating, local-only diagnostics and their privacy boundary.
@@ -37,14 +38,16 @@ Electron main process
   canonical repository root.
 - `src/shared/contracts.ts` is the app-local Zod source of truth for IPC inputs, persisted records,
   and renderer-facing types.
+- `src/shared/review-presets.ts` owns the virtual built-in reviewer and workflow catalog. Built-ins
+  are merged with persisted custom configuration at the service boundary and never seeded to disk.
 - `src/shared/review-formats.ts` validates structured agent output, derives review status and
   priority, and generates portable Markdown without platform-specific links.
 - `src/generated/codex-app-server` contains version-specific TypeScript bindings produced by Codex.
   Zod still validates incoming JSON because generated TypeScript types provide no runtime boundary.
 - `src/preload/index.ts` exposes only repository, settings, review, activity, diagnostics,
   source-preview, bounded clipboard, and validated external-link operations.
-- `src/renderer` owns browser-safe composition, structured review cards, and safe Markdown
-  rendering inside finding bodies.
+- `src/renderer` owns browser-safe composition, structured review cards, safe Markdown rendering
+  inside finding bodies, and the app-local `@xyflow/react` workflow projection.
 
 The generated bindings use bundler module resolution because Codex emits extensionless TypeScript
 imports. They are excluded from Biome formatting and linting; all maintained source remains under
@@ -72,9 +75,25 @@ that fingerprint so history can report when either the branch or worktree has ch
 
 ## Review lifecycle
 
-Only one run may be active. Revy creates an ephemeral Codex thread rooted at the repository with
-`read-only` sandboxing, no approvals, the selected model, and its supported reasoning effort. Codex
-loads the normal `AGENTS.md` hierarchy itself.
+Only one run may be active. Standard Review preserves the single-agent path and remains the `null`
+repository preference. Comprehensive Review is a stable virtual built-in that references the
+Architecture, Security, Correctness, and Test presets as optional, default-enabled reviewers. A
+configured workflow resolves its profile references, required reviewers, selected optional
+reviewers, models, and reasoning efforts into an immutable plan before Codex starts. Disabled
+optional profiles are not validated against the current model catalog and remain `not-selected`.
+
+Every selected specialist runs in its own ephemeral App Server thread rooted at the repository with
+`read-only` sandboxing and no approvals or further delegation. Revy runs at most four specialists
+concurrently and uses sequential batches for larger workflows. The global model, reasoning effort,
+project rules, user story, and personal style remain owned by a final coordinator turn, which
+receives only validated structured specialist results and produces the normal `structured-v1`
+review. Reviewer prompts and raw responses are never added to activity or diagnostics.
+
+The bound Codex version discovers custom agent files only in personal or project-scoped Codex
+directories. Revy intentionally writes to neither location. The backend therefore uses the
+app-owned multi-thread fallback instead of mutating `~/.codex` or the selected repository. Parent
+cancellation interrupts all known active reviewer turns; app shutdown stops every owned App Server
+process.
 
 The custom review instruction order is fixed:
 
@@ -93,6 +112,27 @@ arguments, patches, and command output stay out of activity. Started and complet
 action resolve to one timeline entry. Unfinished records are recovered as interrupted after a
 restart.
 
+Required reviewer failures end the run as `failed` before a review is saved. A failed selected
+optional reviewer still allows consolidation: the run and review are stored as
+`completed-with-warnings` with partial coverage in activity, history, the review view, and generated
+Markdown. Optional reviewers that were switched off create neither work nor a warning.
+
+The renderer presents configuration through one workflow-centered Review Setup surface. Built-ins
+are read-only and can be duplicated into explicit custom drafts; custom reviewer and workflow IDs
+become saved UI state only after the validated IPC write succeeds. Dirty drafts survive reviewer
+detail navigation and guard workflow changes or Settings dismissal.
+
+Standard Review, configured workflows, and resolved plans use fixed, non-draggable workflow maps.
+Reviewer nodes navigate to their settings, while the canvas supports pan, explicit zoom, and fit
+without intercepting Settings scroll. Separate handles and Bezier edges keep paths distinct. At most
+four reviewers appear per visual execution batch; larger plans use batch navigation, and a live map
+follows the currently running batch. Starting a run immediately opens a transient review progress
+view derived from high-level progress and curated activity. Its map derives pending, running,
+completed, failed, cancelled, and not-selected states from the immutable plan; only active reviewer
+or consolidation paths animate. The saved review replaces that transient view when the run
+completes. Diagram layout, animation, batch selection, and the transient presentation are renderer
+state and are never persisted or sent across IPC.
+
 The main process accepts the `exitedReviewMode` text only when it contains a valid versioned review
 object. A single outer JSON fence is tolerated; any remaining parse or schema error fails the run
 without creating a review. Valid findings require a P0–P3 priority, concise Markdown body, and at
@@ -110,6 +150,8 @@ All writes stay under Electron `userData/storage-v1`:
 
 ```text
 settings.json
+reviewer-profiles/<uuid>.json
+review-workflows/<uuid>.json
 repositories/<sha256-of-canonical-root>/
 ├── repository.json
 ├── preferences.json
@@ -124,9 +166,16 @@ repositories/<sha256-of-canonical-root>/
 ```
 
 Settings include recent repositories, an optional explicit Codex executable, model, reasoning
-effort, personal instructions, and the persistent debug-logging switch. Obsolete persisted format
-preferences are discarded without resetting the remaining settings. Repository preferences include
-the base branch and one repository-relative Markdown instruction file. JSON files use
+effort, personal instructions, and the persistent debug-logging switch. Custom reviewer profiles
+and workflows are separate atomic records rather than fields in the fragile global settings object;
+their missing origin field is read as `custom` for compatibility. Built-ins remain virtual and
+cannot be saved or deleted through the service. Deleting a referenced custom profile is rejected;
+deleting a custom workflow resets affected repositories to Standard Review. Obsolete persisted
+format preferences are discarded without resetting the remaining settings. Repository preferences
+include the base branch, selected workflow, and one repository-relative Markdown instruction file.
+Run and review metadata retain the complete resolved workflow snapshot, including built-in content,
+model choices, and reviewer outcomes. Older records without workflow data parse as Standard Review.
+JSON files use
 write-then-rename replacement; activity is appended immediately so an interrupted run remains
 inspectable. Review context stores the normalized user story only for successful reviews; a missing
 `context.json` is treated as an empty context for compatibility. Review directories without

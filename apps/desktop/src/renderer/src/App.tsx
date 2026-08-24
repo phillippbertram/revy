@@ -54,14 +54,97 @@ import type {
   ReviewRunSummary,
   ReviewRunUpdate,
   ReviewSummary,
+  SaveReviewerProfileInput,
+  SaveReviewWorkflowInput,
   SourcePreview,
 } from '../../shared/contracts.js'
 import { formatLegacyReviewMarkdown } from '../../shared/review-formats.js'
 import { ActivitySurface } from './ActivitySurface'
 import { type CodeReference, MarkdownReview } from './MarkdownReview'
+import { ReviewSetupSettings } from './ReviewSetupSettings'
 import { CopyButton, StructuredReview } from './StructuredReview'
+import {
+  resolveConsolidationStatus,
+  resolveWorkflowGraphReviewers,
+  WorkflowGraph,
+  type WorkflowGraphReviewer,
+} from './WorkflowGraph'
 
 type Surface = 'activity' | 'repository' | 'reviews'
+type SettingsPage = 'general' | 'review-setup'
+
+interface ActiveReviewPresentation {
+  activity: AgentActivityEntry[]
+  progress: ReviewProgress
+  reviewers: WorkflowGraphReviewer[]
+  workflowName: string
+}
+
+function resolveActiveReviewPresentation({
+  active,
+  enabledOptionalReviewerIds,
+  liveActivity,
+  progress,
+  repository,
+  reviewConfiguration,
+}: {
+  active: boolean
+  enabledOptionalReviewerIds: string[]
+  liveActivity: ReviewRun | null
+  progress: ReviewProgress | null
+  repository: RepositorySnapshot | null
+  reviewConfiguration: BootstrapState['reviewConfiguration']
+}): ActiveReviewPresentation | null {
+  if (!active || !repository) {
+    return null
+  }
+  const currentProgress: ReviewProgress =
+    progress ??
+    ({
+      error: null,
+      message: 'Starting the review…',
+      reviewId: null,
+      state: 'preparing',
+    } satisfies ReviewProgress)
+  const currentRun = liveActivity?.metadata.id === currentProgress.reviewId ? liveActivity : null
+  if (currentRun) {
+    return {
+      activity: currentRun.activity,
+      progress: currentProgress,
+      reviewers: resolveWorkflowGraphReviewers(currentRun.metadata.reviewPlan, currentRun.activity),
+      workflowName: currentRun.metadata.reviewPlan.workflowName,
+    }
+  }
+  const workflow = reviewConfiguration.workflows.find(
+    (candidate) => candidate.id === repository.preferences.workflowId,
+  )
+  const profiles = new Map(reviewConfiguration.profiles.map((profile) => [profile.id, profile]))
+  const reviewers: WorkflowGraphReviewer[] =
+    workflow?.reviewers.flatMap((assignment) => {
+      const profile = profiles.get(assignment.profileId)
+      if (!profile) {
+        return []
+      }
+      const selected =
+        assignment.required || enabledOptionalReviewerIds.includes(assignment.profileId)
+      return [
+        {
+          description: profile.description,
+          name: profile.name,
+          profileId: profile.id,
+          required: assignment.required,
+          selected,
+          status: selected ? ('pending' as const) : ('not-selected' as const),
+        },
+      ]
+    }) ?? []
+  return {
+    activity: [],
+    progress: currentProgress,
+    reviewers,
+    workflowName: workflow?.name ?? 'Standard Review',
+  }
+}
 
 function unwrapResult<T>(result: Result<T>): T {
   if (!result.ok) {
@@ -109,6 +192,11 @@ function reportRendererError(
     message: message || fallback,
     stack: error?.stack?.slice(0, 16_000) || null,
   })
+}
+
+function isResizeObserverLoopError(value: unknown): boolean {
+  const message = value instanceof Error ? value.message : typeof value === 'string' ? value : ''
+  return message.startsWith('ResizeObserver loop')
 }
 
 function ErrorBanner({ error, onClose }: { error: string; onClose: () => void }) {
@@ -361,6 +449,7 @@ function Sidebar({
             </button>
             <Button
               aria-label="Cancel review"
+              disabled={!progress.reviewId}
               onClick={onCancelReview}
               size="icon-sm"
               variant="outline"
@@ -402,32 +491,42 @@ function Sidebar({
 }
 
 interface RepositorySurfaceProps {
+  activeReview: ActiveReviewPresentation | null
   agentReady: boolean
   busy: boolean
   onChooseInstructions: () => void
   onRefresh: () => void
   onSelectRepository: () => void
   onStartReview: () => void
+  onToggleOptionalReviewer: (profileId: string, enabled: boolean) => void
   onUserStoryChange: (value: string) => void
   onUpdateBase: (base: string) => void
   onUpdateInstructions: (path: string | null) => void
+  onUpdateWorkflow: (workflowId: string | null) => void
   progress: ReviewProgress | null
   repository: RepositorySnapshot | null
+  reviewConfiguration: BootstrapState['reviewConfiguration']
+  enabledOptionalReviewerIds: string[]
   userStory: string
 }
 
 function RepositorySurface({
+  activeReview,
   agentReady,
   busy,
   onChooseInstructions,
   onRefresh,
   onSelectRepository,
   onStartReview,
+  onToggleOptionalReviewer,
   onUserStoryChange,
   onUpdateBase,
   onUpdateInstructions,
+  onUpdateWorkflow,
   progress,
   repository,
+  reviewConfiguration,
+  enabledOptionalReviewerIds,
   userStory,
 }: RepositorySurfaceProps) {
   if (!repository) {
@@ -465,6 +564,10 @@ function RepositorySurface({
     !reviewRunning
   const staged = repository.files.filter((file) => file.sources.includes('staged')).length
   const untracked = repository.files.filter((file) => file.sources.includes('untracked')).length
+  const workflow = reviewConfiguration.workflows.find(
+    (candidate) => candidate.id === repository.preferences.workflowId,
+  )
+  const profiles = new Map(reviewConfiguration.profiles.map((profile) => [profile.id, profile]))
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-8 lg:p-10">
@@ -530,6 +633,29 @@ function RepositorySurface({
         ))}
       </div>
 
+      {activeReview && (
+        <Card>
+          <CardHeader>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <CardTitle>Live workflow</CardTitle>
+                <CardDescription className="mt-2">{activeReview.progress.message}</CardDescription>
+              </div>
+              <Badge variant="secondary">{activeReview.workflowName}</Badge>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <WorkflowGraph
+              consolidationStatus={resolveConsolidationStatus(
+                activeReview.progress.state,
+                activeReview.reviewers,
+              )}
+              reviewers={activeReview.reviewers}
+            />
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>Review scope</CardTitle>
@@ -586,6 +712,65 @@ function RepositorySurface({
             {instructionsRequired && (
               <p className="text-xs leading-5 text-amber-200">
                 Multiple review skills were found. Choose one before starting.
+              </p>
+            )}
+          </div>
+          <div className="space-y-3 md:col-span-2">
+            <div className="space-y-2">
+              <Label>Review workflow</Label>
+              <Select
+                disabled={Boolean(reviewRunning)}
+                value={workflow?.id ?? 'standard'}
+                onValueChange={(value) => onUpdateWorkflow(value === 'standard' ? null : value)}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="standard">Standard Review</SelectItem>
+                  {reviewConfiguration.workflows.map((candidate) => (
+                    <SelectItem key={candidate.id} value={candidate.id}>
+                      {candidate.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {workflow ? (
+              <div className="grid gap-2 rounded-lg border bg-muted/15 p-4 sm:grid-cols-2">
+                {workflow.reviewers.map((assignment) => {
+                  const profile = profiles.get(assignment.profileId)
+                  if (!profile) {
+                    return null
+                  }
+                  const checked =
+                    assignment.required || enabledOptionalReviewerIds.includes(profile.id)
+                  return (
+                    <div
+                      className="flex items-start justify-between gap-4 rounded-lg border bg-background/40 p-3"
+                      key={profile.id}
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium">{profile.name}</p>
+                        <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
+                          {profile.description}
+                        </p>
+                        <Badge className="mt-2" variant="outline">
+                          {assignment.required ? 'Required' : 'Optional'}
+                        </Badge>
+                      </div>
+                      <Switch
+                        checked={checked}
+                        disabled={assignment.required || Boolean(reviewRunning)}
+                        onCheckedChange={(enabled) => onToggleOptionalReviewer(profile.id, enabled)}
+                      />
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <p className="text-xs leading-5 text-muted-foreground">
+                Uses the existing single-agent review without specialist reviewers.
               </p>
             )}
           </div>
@@ -653,7 +838,148 @@ function RepositorySurface({
   )
 }
 
+function ActiveReviewProgressSurface({
+  activeReview,
+  onCancelReview,
+}: {
+  activeReview: ActiveReviewPresentation
+  onCancelReview: () => void
+}) {
+  const stages = [
+    {
+      description: 'Capturing the repository context.',
+      id: 'preparing',
+      label: 'Preparing',
+    },
+    {
+      description: 'Reviewing the selected changes.',
+      id: 'running',
+      label: 'Reviewing',
+    },
+    {
+      description: 'Validating and storing the result.',
+      id: 'saving',
+      label: 'Saving',
+    },
+  ] as const
+  const currentStage = ['completed', 'completed-with-warnings'].includes(
+    activeReview.progress.state,
+  )
+    ? stages.length
+    : stages.findIndex((stage) => stage.id === activeReview.progress.state)
+  const recentActivity = activeReview.activity.slice(-4).toReversed()
+
+  return (
+    <div className="mx-auto max-w-4xl px-8 py-8 lg:px-12">
+      <header className="mb-6 flex flex-wrap items-start justify-between gap-5 border-b pb-6">
+        <div className="min-w-0 flex-1">
+          <div className="mb-3 flex flex-wrap gap-2">
+            <Badge variant="secondary">In progress</Badge>
+            <Badge variant="outline">{activeReview.workflowName}</Badge>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl border bg-primary/10 text-primary">
+              <LoaderCircle className="size-5 animate-spin" />
+            </span>
+            <div>
+              <h1 className="text-2xl font-semibold tracking-tight">Review in progress</h1>
+              <p className="mt-1 text-sm text-muted-foreground">{activeReview.progress.message}</p>
+            </div>
+          </div>
+        </div>
+        <Button
+          disabled={!activeReview.progress.reviewId}
+          onClick={onCancelReview}
+          size="sm"
+          variant="outline"
+        >
+          <Square className="fill-current" />
+          Cancel review
+        </Button>
+      </header>
+
+      <div className="mb-6 grid gap-3 sm:grid-cols-3">
+        {stages.map((stage, index) => {
+          const complete = currentStage > index
+          const active = currentStage === index
+          return (
+            <div
+              className={`rounded-xl border p-4 transition-colors ${
+                active
+                  ? 'border-primary/40 bg-primary/10'
+                  : complete
+                    ? 'border-emerald-400/25 bg-emerald-400/5'
+                    : 'bg-card/40'
+              }`}
+              key={stage.id}
+            >
+              <div className="flex items-center gap-2">
+                {complete ? (
+                  <CheckCircle2 className="size-4 text-emerald-400" />
+                ) : active ? (
+                  <LoaderCircle className="size-4 animate-spin text-primary" />
+                ) : (
+                  <Clock3 className="size-4 text-muted-foreground" />
+                )}
+                <p className="text-sm font-semibold">{stage.label}</p>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">{stage.description}</p>
+            </div>
+          )
+        })}
+      </div>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle>Workflow</CardTitle>
+          <CardDescription>
+            Status updates appear here while the review is running. Connections animate during
+            active work.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <WorkflowGraph
+            consolidationStatus={resolveConsolidationStatus(
+              activeReview.progress.state,
+              activeReview.reviewers,
+            )}
+            reviewers={activeReview.reviewers}
+          />
+        </CardContent>
+      </Card>
+
+      {recentActivity.length > 0 && (
+        <Card className="gap-0 py-0">
+          <CardHeader className="border-b py-5">
+            <CardTitle>Latest activity</CardTitle>
+            <CardDescription>Recent status events without prompts or reasoning.</CardDescription>
+          </CardHeader>
+          <div className="divide-y">
+            {recentActivity.map((entry) => (
+              <div className="flex items-center gap-3 px-6 py-3" key={entry.id}>
+                {entry.status === 'completed' ? (
+                  <CheckCircle2 className="size-4 shrink-0 text-emerald-400" />
+                ) : (
+                  <LoaderCircle className="size-4 shrink-0 animate-spin text-primary" />
+                )}
+                <p className="min-w-0 flex-1 truncate text-sm">{entry.title}</p>
+                <Badge variant="outline">{entry.status}</Badge>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <p className="mt-5 text-center text-xs text-muted-foreground">
+        The completed review will replace this progress view automatically.
+      </p>
+    </div>
+  )
+}
+
 interface ReviewsSurfaceProps {
+  activeReview: ActiveReviewPresentation | null
+  onCancelReview: () => void
   onCopy: (text: string) => Promise<boolean>
   onDelete: (id: string) => void
   onOpenExternal: (url: string) => void
@@ -666,6 +992,8 @@ interface ReviewsSurfaceProps {
 }
 
 function ReviewsSurface({
+  activeReview,
+  onCancelReview,
   onCloseSource,
   onCopy,
   onDelete,
@@ -678,29 +1006,41 @@ function ReviewsSurface({
 }: ReviewsSurfaceProps) {
   return (
     <div
-      className={`grid h-full min-h-0 ${
+      className={`grid h-full min-h-0 min-w-0 ${
         source
           ? 'grid-cols-[17rem_minmax(0,1fr)_minmax(22rem,34rem)]'
           : 'grid-cols-[17rem_minmax(0,1fr)]'
       }`}
     >
-      <aside className="min-h-0 border-r bg-card/20">
+      <aside className="min-h-0 min-w-0 overflow-hidden border-r bg-card/20">
         <div className="flex h-16 items-center border-b px-5">
           <div>
             <h1 className="font-semibold">Review history</h1>
             <p className="text-xs text-muted-foreground">{reviews.length} saved reviews</p>
           </div>
         </div>
-        <ScrollArea className="h-[calc(100%-4rem)]">
-          <div className="space-y-1 p-3">
-            {reviews.length === 0 && (
+        <ScrollArea className="h-[calc(100%-4rem)] w-full [&>[data-slot=scroll-area-viewport]>div]:min-w-0! [&>[data-slot=scroll-area-viewport]>div]:w-full! [&>[data-slot=scroll-area-viewport]>div]:block!">
+          <div className="min-w-0 space-y-1 p-3">
+            {activeReview && (
+              <div className="mb-2 rounded-lg border border-primary/40 bg-primary/5 px-3 py-3">
+                <div className="flex items-center gap-2">
+                  <LoaderCircle className="size-4 shrink-0 animate-spin text-primary" />
+                  <p className="min-w-0 flex-1 truncate text-sm font-medium">Review in progress</p>
+                  <Badge variant="secondary">Live</Badge>
+                </div>
+                <p className="mt-2 truncate text-xs text-muted-foreground">
+                  {activeReview.workflowName}
+                </p>
+              </div>
+            )}
+            {reviews.length === 0 && !activeReview && (
               <div className="px-3 py-10 text-center text-sm leading-6 text-muted-foreground">
                 Completed reviews will appear here.
               </div>
             )}
             {reviews.map((item) => (
               <button
-                className={`w-full rounded-lg border px-3 py-3 text-left transition-colors hover:bg-accent/50 ${
+                className={`block w-full min-w-0 max-w-full overflow-hidden rounded-lg border px-3 py-3 text-left transition-colors hover:bg-accent/50 ${
                   review?.metadata.id === item.id
                     ? 'border-primary/40 bg-primary/5'
                     : 'border-transparent'
@@ -730,6 +1070,16 @@ function ReviewsSurface({
                 </div>
                 <div className="mt-2 flex flex-wrap gap-1">
                   {item.hasUserStory && <Badge variant="outline">Story</Badge>}
+                  <Badge
+                    className="max-w-full truncate"
+                    title={item.reviewPlan.workflowName}
+                    variant="outline"
+                  >
+                    {item.reviewPlan.workflowName}
+                  </Badge>
+                  {item.reviewPlan.coverageStatus === 'partial' && (
+                    <Badge variant="outline">Partial coverage</Badge>
+                  )}
                   {item.format === 'structured-v1' ? (
                     <>
                       <Badge variant="secondary">
@@ -754,7 +1104,12 @@ function ReviewsSurface({
       </aside>
 
       <main className="min-h-0 min-w-0 overflow-auto">
-        {!review ? (
+        {activeReview ? (
+          <ActiveReviewProgressSurface
+            activeReview={activeReview}
+            onCancelReview={onCancelReview}
+          />
+        ) : !review ? (
           <div className="flex h-full items-center justify-center p-8 text-center">
             <div>
               <History className="mx-auto mb-3 size-8 text-muted-foreground/60" />
@@ -771,6 +1126,7 @@ function ReviewsSurface({
                 <Badge variant="secondary">
                   {review.content ? 'Structured review' : 'Legacy review'}
                 </Badge>
+                <Badge variant="outline">{review.metadata.reviewPlan.workflowName}</Badge>
                 <Badge variant="outline">{review.metadata.model}</Badge>
               </div>
               <div className="flex items-center gap-2">
@@ -794,6 +1150,57 @@ function ReviewsSurface({
                 HEAD or the working tree changed after this review. Code links show current files.
               </div>
             )}
+            {review.metadata.reviewPlan.coverageStatus === 'partial' && (
+              <div className="mb-6 flex gap-3 rounded-xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm leading-6 text-amber-100">
+                <AlertTriangle className="mt-1 size-4 shrink-0" />
+                This review has partial coverage because one or more selected optional reviewers did
+                not complete.
+              </div>
+            )}
+            <details className="group mb-6 rounded-xl border bg-card text-card-foreground shadow-sm">
+              <summary className="flex cursor-pointer list-none items-center gap-4 rounded-xl px-5 py-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-xl border bg-primary/10 text-primary">
+                  <Bot className="size-5" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block font-semibold leading-none">Review workflow</span>
+                  <span className="mt-2 block text-sm text-muted-foreground">
+                    {review.metadata.reviewPlan.reviewers.length === 0
+                      ? 'Built-in single-agent review.'
+                      : `${
+                          review.metadata.reviewPlan.reviewers.filter(
+                            (reviewer) => reviewer.status === 'completed',
+                          ).length
+                        } of ${
+                          review.metadata.reviewPlan.reviewers.filter(
+                            (reviewer) => reviewer.selected,
+                          ).length
+                        } selected reviewers completed.`}
+                  </span>
+                </span>
+                <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+              </summary>
+              <div className="space-y-3 border-t p-4">
+                <WorkflowGraph
+                  consolidationStatus="completed"
+                  reviewers={resolveWorkflowGraphReviewers(review.metadata.reviewPlan, [])}
+                />
+                {review.metadata.reviewPlan.reviewers
+                  .filter((reviewer) => reviewer.error)
+                  .map((reviewer) => (
+                    <div
+                      className="rounded-lg border border-amber-400/20 bg-amber-400/10 p-3"
+                      key={reviewer.profileId}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="truncate text-sm font-medium">{reviewer.name}</p>
+                        <Badge variant="outline">{reviewer.status}</Badge>
+                      </div>
+                      <p className="mt-2 text-xs leading-5 text-amber-200">{reviewer.error}</p>
+                    </div>
+                  ))}
+              </div>
+            </details>
             {review.context.userStory && (
               <details
                 className="group mb-6 rounded-xl border bg-card text-card-foreground shadow-sm"
@@ -860,6 +1267,11 @@ interface SettingsContentProps {
   onChooseExecutable: () => void
   onOpenLogFolder: () => void
   onRefreshAgent: () => void
+  onDeleteReviewerProfile: (profileId: string) => Promise<boolean>
+  onDeleteWorkflow: (workflowId: string) => Promise<boolean>
+  onDirtyChange: (dirty: boolean) => void
+  onSaveReviewerProfile: (input: SaveReviewerProfileInput) => Promise<boolean>
+  onSaveWorkflow: (input: SaveReviewWorkflowInput) => Promise<boolean>
   onUpdateSettings: (input: Parameters<typeof window.revy.updateSettings>[0]) => void
 }
 
@@ -869,178 +1281,247 @@ function SettingsContent({
   onChooseExecutable,
   onOpenLogFolder,
   onRefreshAgent,
+  onDeleteReviewerProfile,
+  onDeleteWorkflow,
+  onDirtyChange,
+  onSaveReviewerProfile,
+  onSaveWorkflow,
   onUpdateSettings,
 }: SettingsContentProps) {
   const [instructions, setInstructions] = useState(bootstrap.settings.personalInstructions)
+  const [page, setPage] = useState<SettingsPage>('general')
+  const [reviewSetupDirty, setReviewSetupDirty] = useState(false)
   useEffect(() => setInstructions(bootstrap.settings.personalInstructions), [bootstrap.settings])
+  useEffect(() => onDirtyChange(reviewSetupDirty), [onDirtyChange, reviewSetupDirty])
   const model = bootstrap.agent.models.find(
     (candidate) => candidate.id === bootstrap.settings.model,
   )
+  const pages: Array<{ icon: typeof Settings2; id: SettingsPage; label: string }> = [
+    { icon: Settings2, id: 'general', label: 'General' },
+    { icon: ListTree, id: 'review-setup', label: 'Review Setup' },
+  ]
+
+  function selectPage(nextPage: SettingsPage): void {
+    if (
+      page === 'review-setup' &&
+      nextPage !== 'review-setup' &&
+      reviewSetupDirty &&
+      !window.confirm('Discard unsaved review setup changes?')
+    ) {
+      return
+    }
+    if (page === 'review-setup' && nextPage !== 'review-setup') {
+      setReviewSetupDirty(false)
+    }
+    setPage(nextPage)
+  }
+
   return (
     <div className="space-y-6 p-6 md:p-7">
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <CardTitle>Codex App Server</CardTitle>
-              <CardDescription className="mt-2">
-                Experimental local integration. Revy never installs, updates, or authenticates
-                Codex.
+      <nav aria-label="Settings sections" className="grid gap-2 sm:grid-cols-2">
+        {pages.map((item) => {
+          const Icon = item.icon
+          return (
+            <button
+              aria-current={page === item.id ? 'page' : undefined}
+              className={`flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors ${
+                page === item.id
+                  ? 'border-primary/50 bg-primary/10 text-primary'
+                  : 'bg-card text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+              }`}
+              key={item.id}
+              onClick={() => selectPage(item.id)}
+              type="button"
+            >
+              <Icon className="size-4" />
+              {item.label}
+            </button>
+          )
+        })}
+      </nav>
+
+      {page === 'general' && (
+        <>
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <CardTitle>Codex App Server</CardTitle>
+                  <CardDescription className="mt-2">
+                    Experimental local integration. Revy never installs, updates, or authenticates
+                    Codex.
+                  </CardDescription>
+                </div>
+                <Badge variant={bootstrap.agent.state === 'ready' ? 'default' : 'secondary'}>
+                  {bootstrap.agent.state}
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 rounded-lg border bg-muted/20 p-4 text-sm sm:grid-cols-[9rem_1fr]">
+                <span className="text-muted-foreground">Executable</span>
+                <span className="truncate font-mono text-xs">
+                  {bootstrap.agent.executable ?? 'Not detected'}
+                </span>
+                <span className="text-muted-foreground">Version</span>
+                <span>{bootstrap.agent.version ?? '—'}</span>
+                <span className="text-muted-foreground">Account</span>
+                <span>{bootstrap.agent.accountLabel ?? '—'}</span>
+              </div>
+              {bootstrap.agent.error && (
+                <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 p-4 text-sm leading-6 text-amber-100">
+                  {bootstrap.agent.error}
+                </div>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button disabled={busy} onClick={onRefreshAgent} variant="outline">
+                  <RefreshCw />
+                  Retry connection
+                </Button>
+                <Button disabled={busy} onClick={onChooseExecutable} variant="ghost">
+                  Choose executable…
+                </Button>
+              </div>
+              {bootstrap.agent.state !== 'ready' && (
+                <p className="text-xs leading-5 text-muted-foreground">
+                  Install the Codex CLI, run{' '}
+                  <code className="rounded bg-muted px-1 py-0.5">codex login</code>, then retry.
+                  Revy does not change{' '}
+                  <code className="rounded bg-muted px-1 py-0.5">~/.codex/config.toml</code>.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Diagnostics</CardTitle>
+              <CardDescription>
+                Local rotating logs help diagnose Revy, Electron, Git, and Codex connection
+                failures.
               </CardDescription>
-            </div>
-            <Badge variant={bootstrap.agent.state === 'ready' ? 'default' : 'secondary'}>
-              {bootstrap.agent.state}
-            </Badge>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-3 rounded-lg border bg-muted/20 p-4 text-sm sm:grid-cols-[9rem_1fr]">
-            <span className="text-muted-foreground">Executable</span>
-            <span className="truncate font-mono text-xs">
-              {bootstrap.agent.executable ?? 'Not detected'}
-            </span>
-            <span className="text-muted-foreground">Version</span>
-            <span>{bootstrap.agent.version ?? '—'}</span>
-            <span className="text-muted-foreground">Account</span>
-            <span>{bootstrap.agent.accountLabel ?? '—'}</span>
-          </div>
-          {bootstrap.agent.error && (
-            <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 p-4 text-sm leading-6 text-amber-100">
-              {bootstrap.agent.error}
-            </div>
-          )}
-          <div className="flex flex-wrap gap-2">
-            <Button disabled={busy} onClick={onRefreshAgent} variant="outline">
-              <RefreshCw />
-              Retry connection
-            </Button>
-            <Button disabled={busy} onClick={onChooseExecutable} variant="ghost">
-              Choose executable…
-            </Button>
-          </div>
-          {bootstrap.agent.state !== 'ready' && (
-            <p className="text-xs leading-5 text-muted-foreground">
-              Install the Codex CLI, run{' '}
-              <code className="rounded bg-muted px-1 py-0.5">codex login</code>, then retry. Revy
-              does not change{' '}
-              <code className="rounded bg-muted px-1 py-0.5">~/.codex/config.toml</code>.
-            </p>
-          )}
-        </CardContent>
-      </Card>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-start justify-between gap-5 rounded-lg border bg-muted/20 p-4">
+                <div>
+                  <Label htmlFor="debug-logging">Enable debug logging</Label>
+                  <p className="mt-2 max-w-xl text-xs leading-5 text-muted-foreground">
+                    Adds local paths and stack traces until you turn it off. Repository contents,
+                    prompts, reasoning, tool arguments, and command output are never logged.
+                  </p>
+                </div>
+                <Switch
+                  checked={bootstrap.settings.debugLoggingEnabled}
+                  disabled={busy}
+                  id="debug-logging"
+                  onCheckedChange={(checked) => onUpdateSettings({ debugLoggingEnabled: checked })}
+                />
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-xs leading-5 text-muted-foreground">
+                  Revy keeps one 5 MiB log and one rotated archive on this computer.
+                </p>
+                <Button disabled={busy} onClick={onOpenLogFolder} variant="outline">
+                  <FolderOpen />
+                  Open log folder
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Diagnostics</CardTitle>
-          <CardDescription>
-            Local rotating logs help diagnose Revy, Electron, Git, and Codex connection failures.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-start justify-between gap-5 rounded-lg border bg-muted/20 p-4">
-            <div>
-              <Label htmlFor="debug-logging">Enable debug logging</Label>
-              <p className="mt-2 max-w-xl text-xs leading-5 text-muted-foreground">
-                Adds local paths and stack traces until you turn it off. Repository contents,
-                prompts, reasoning, tool arguments, and command output are never logged.
-              </p>
-            </div>
-            <Switch
-              checked={bootstrap.settings.debugLoggingEnabled}
-              disabled={busy}
-              id="debug-logging"
-              onCheckedChange={(checked) => onUpdateSettings({ debugLoggingEnabled: checked })}
-            />
-          </div>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-xs leading-5 text-muted-foreground">
-              Revy keeps one 5 MiB log and one rotated archive on this computer.
-            </p>
-            <Button disabled={busy} onClick={onOpenLogFolder} variant="outline">
-              <FolderOpen />
-              Open log folder
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Model and style</CardTitle>
+              <CardDescription>
+                Models and reasoning efforts come directly from App Server.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-5 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Model</Label>
+                <Select
+                  disabled={bootstrap.agent.models.length === 0}
+                  {...(bootstrap.settings.model ? { value: bootstrap.settings.model } : {})}
+                  onValueChange={(value) => onUpdateSettings({ model: value })}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="No models available" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {bootstrap.agent.models.map((candidate) => (
+                      <SelectItem key={candidate.id} value={candidate.id}>
+                        {candidate.displayName}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Reasoning effort</Label>
+                <Select
+                  disabled={!model}
+                  {...(bootstrap.settings.reasoningEffort
+                    ? { value: bootstrap.settings.reasoningEffort }
+                    : {})}
+                  onValueChange={(value) => onUpdateSettings({ reasoningEffort: value })}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Select effort" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {model?.supportedReasoningEfforts.map((effort) => (
+                      <SelectItem key={effort.reasoningEffort} value={effort.reasoningEffort}>
+                        {effort.reasoningEffort}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </CardContent>
+          </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Model and style</CardTitle>
-          <CardDescription>
-            Models and reasoning efforts come directly from App Server.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-5 sm:grid-cols-2">
-          <div className="space-y-2">
-            <Label>Model</Label>
-            <Select
-              disabled={bootstrap.agent.models.length === 0}
-              {...(bootstrap.settings.model ? { value: bootstrap.settings.model } : {})}
-              onValueChange={(value) => onUpdateSettings({ model: value })}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="No models available" />
-              </SelectTrigger>
-              <SelectContent>
-                {bootstrap.agent.models.map((candidate) => (
-                  <SelectItem key={candidate.id} value={candidate.id}>
-                    {candidate.displayName}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <Label>Reasoning effort</Label>
-            <Select
-              disabled={!model}
-              {...(bootstrap.settings.reasoningEffort
-                ? { value: bootstrap.settings.reasoningEffort }
-                : {})}
-              onValueChange={(value) => onUpdateSettings({ reasoningEffort: value })}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select effort" />
-              </SelectTrigger>
-              <SelectContent>
-                {model?.supportedReasoningEfforts.map((effort) => (
-                  <SelectItem key={effort.reasoningEffort} value={effort.reasoningEffort}>
-                    {effort.reasoningEffort}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </CardContent>
-      </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Personal instructions</CardTitle>
+              <CardDescription>
+                Applied after the read-only contract, structured format, and project rules.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Textarea
+                className="min-h-32 resize-y"
+                maxLength={12_000}
+                onChange={(event) => setInstructions(event.target.value)}
+                placeholder="For example: Keep findings direct and explain user impact."
+                value={instructions}
+              />
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">
+                  {instructions.length} / 12,000
+                </span>
+                <Button
+                  disabled={instructions === bootstrap.settings.personalInstructions}
+                  onClick={() => onUpdateSettings({ personalInstructions: instructions })}
+                >
+                  Save instructions
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Personal instructions</CardTitle>
-          <CardDescription>
-            Applied after the read-only contract, structured format, and project rules.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <Textarea
-            className="min-h-32 resize-y"
-            maxLength={12_000}
-            onChange={(event) => setInstructions(event.target.value)}
-            placeholder="For example: Keep findings direct and explain user impact."
-            value={instructions}
-          />
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">{instructions.length} / 12,000</span>
-            <Button
-              disabled={instructions === bootstrap.settings.personalInstructions}
-              onClick={() => onUpdateSettings({ personalInstructions: instructions })}
-            >
-              Save instructions
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+      {page === 'review-setup' && (
+        <ReviewSetupSettings
+          bootstrap={bootstrap}
+          busy={busy}
+          onDeleteReviewerProfile={onDeleteReviewerProfile}
+          onDeleteWorkflow={onDeleteWorkflow}
+          onDirtyChange={setReviewSetupDirty}
+          onSaveReviewerProfile={onSaveReviewerProfile}
+          onSaveWorkflow={onSaveWorkflow}
+        />
+      )}
     </div>
   )
 }
@@ -1049,26 +1530,49 @@ export function App() {
   const [activity, setActivity] = useState<ReviewRun | null>(null)
   const [bootstrap, setBootstrap] = useState<BootstrapState | null>(null)
   const [busy, setBusy] = useState(false)
+  const [enabledOptionalReviewerIds, setEnabledOptionalReviewerIds] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [liveActivity, setLiveActivity] = useState<ReviewRun | null>(null)
   const [progress, setProgress] = useState<ReviewProgress | null>(null)
+  const [reviewStarting, setReviewStarting] = useState(false)
   const [repository, setRepository] = useState<RepositorySnapshot | null>(null)
   const [review, setReview] = useState<ReviewDocument | null>(null)
   const [reviews, setReviews] = useState<ReviewSummary[]>([])
   const [runs, setRuns] = useState<ReviewRunSummary[]>([])
+  const [settingsDirty, setSettingsDirty] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [source, setSource] = useState<SourcePreview | null>(null)
   const [surface, setSurface] = useState<Surface>('repository')
   const [userStory, setUserStory] = useState('')
+  const workflowDefaultsKey =
+    bootstrap?.reviewConfiguration.workflows
+      .map(
+        (workflow) =>
+          `${workflow.id}:${workflow.reviewers
+            .map(
+              (reviewer) => `${reviewer.profileId}:${reviewer.required}:${reviewer.defaultEnabled}`,
+            )
+            .join(',')}`,
+      )
+      .join('|') ?? ''
 
   const reviewRunning = useMemo(
-    () => Boolean(progress && ['preparing', 'running', 'saving'].includes(progress.state)),
-    [progress],
+    () =>
+      reviewStarting ||
+      Boolean(progress && ['preparing', 'running', 'saving'].includes(progress.state)),
+    [progress, reviewStarting],
   )
 
   useEffect(() => {
     const unsubscribe = window.revy.onReviewProgress(setProgress)
-    const onError = (event: ErrorEvent): void =>
-      reportRendererError('error', event.error ?? event.message, 'Renderer error')
+    const onError = (event: ErrorEvent): void => {
+      const value = event.error ?? event.message
+      if (isResizeObserverLoopError(value)) {
+        event.preventDefault()
+        return
+      }
+      reportRendererError('error', value, 'Renderer error')
+    }
     const onUnhandledRejection = (event: PromiseRejectionEvent): void =>
       reportRendererError('unhandled-rejection', event.reason, 'Unhandled renderer rejection')
     window.addEventListener('error', onError)
@@ -1120,8 +1624,27 @@ export function App() {
       setActivity((current) =>
         current?.metadata.id === update.run.id ? mergeRunUpdate(current, update) : current,
       )
+      setLiveActivity((current) =>
+        current?.metadata.id === update.run.id
+          ? mergeRunUpdate(current, update)
+          : {
+              activity: update.entry ? [update.entry] : [],
+              metadata: update.run,
+            },
+      )
     })
   }, [repository])
+
+  useEffect(() => {
+    const workflow = bootstrap?.reviewConfiguration.workflows.find(
+      (candidate) => candidate.id === repository?.preferences.workflowId,
+    )
+    setEnabledOptionalReviewerIds(
+      workflow?.reviewers
+        .filter((reviewer) => !reviewer.required && reviewer.defaultEnabled)
+        .map((reviewer) => reviewer.profileId) ?? [],
+    )
+  }, [repository?.preferences.workflowId, repository?.root, workflowDefaultsKey])
 
   async function run(operation: () => Promise<void>): Promise<void> {
     setBusy(true)
@@ -1157,6 +1680,7 @@ export function App() {
     }
     setRepository(next)
     setActivity(null)
+    setLiveActivity(null)
     setReview(null)
     setRuns([])
     setSource(null)
@@ -1205,6 +1729,20 @@ export function App() {
     })
   }
 
+  async function updateWorkflow(workflowId: string | null): Promise<void> {
+    await run(async () => {
+      setRepository(unwrapResult(await window.revy.updateRepositoryPreferences({ workflowId })))
+    })
+  }
+
+  function toggleOptionalReviewer(profileId: string, enabled: boolean): void {
+    setEnabledOptionalReviewerIds((current) =>
+      enabled
+        ? [...new Set([...current, profileId])]
+        : current.filter((candidate) => candidate !== profileId),
+    )
+  }
+
   async function chooseInstructions(): Promise<void> {
     await run(async () => {
       setRepository(unwrapResult(await window.revy.selectInstructionFile()))
@@ -1216,28 +1754,50 @@ export function App() {
       return
     }
     setError(null)
+    setReviewStarting(true)
+    setProgress({
+      error: null,
+      message: 'Starting the review…',
+      reviewId: null,
+      state: 'preparing',
+    })
+    setReview(null)
+    setSource(null)
+    setSurface('reviews')
     try {
       const document = unwrapResult(
         await window.revy.startReview({
           baseBranch: repository.baseBranch,
+          enabledOptionalReviewerIds,
           userStory: userStory.trim() || null,
+          workflowId: repository.preferences.workflowId,
         }),
       )
       setUserStory('')
       setReview(document)
-      setSource(null)
       setRepository(unwrapResult(await window.revy.refreshRepository()))
       await Promise.all([refreshHistory(), refreshActivity()])
-      setSurface('reviews')
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : 'The review failed.'
+      setProgress((current) =>
+        current?.state === 'cancelled' || current?.state === 'failed'
+          ? current
+          : current?.reviewId
+            ? { ...current, error: message, message, state: 'failed' }
+            : null,
+      )
       if (!/cancel/i.test(message)) {
         setError(message)
       }
+    } finally {
+      setReviewStarting(false)
     }
   }
 
   async function cancelReview(): Promise<void> {
+    if (!progress?.reviewId) {
+      return
+    }
     await run(async () => {
       unwrapResult(await window.revy.cancelReview())
     })
@@ -1346,6 +1906,74 @@ export function App() {
     })
   }
 
+  async function saveReviewerProfile(input: SaveReviewerProfileInput): Promise<boolean> {
+    setBusy(true)
+    setError(null)
+    try {
+      const reviewConfiguration = unwrapResult(await window.revy.saveReviewerProfile(input))
+      setBootstrap((current) => (current ? { ...current, reviewConfiguration } : current))
+      return true
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'The reviewer could not be saved.')
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function deleteReviewerProfile(profileId: string): Promise<boolean> {
+    setBusy(true)
+    setError(null)
+    try {
+      const reviewConfiguration = unwrapResult(await window.revy.deleteReviewerProfile(profileId))
+      setBootstrap((current) => (current ? { ...current, reviewConfiguration } : current))
+      return true
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'The reviewer could not be deleted.')
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function saveWorkflow(input: SaveReviewWorkflowInput): Promise<boolean> {
+    setBusy(true)
+    setError(null)
+    try {
+      const reviewConfiguration = unwrapResult(await window.revy.saveWorkflow(input))
+      setBootstrap((current) => (current ? { ...current, reviewConfiguration } : current))
+      return true
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'The workflow could not be saved.')
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function deleteWorkflow(workflowId: string): Promise<boolean> {
+    setBusy(true)
+    setError(null)
+    try {
+      const reviewConfiguration = unwrapResult(await window.revy.deleteWorkflow(workflowId))
+      setBootstrap((current) => (current ? { ...current, reviewConfiguration } : current))
+      setRepository((current) =>
+        current?.preferences.workflowId === workflowId
+          ? {
+              ...current,
+              preferences: { ...current.preferences, workflowId: null },
+            }
+          : current,
+      )
+      return true
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'The workflow could not be deleted.')
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function openLogFolder(): Promise<void> {
     await run(async () => {
       unwrapResult(await window.revy.openLogFolder())
@@ -1363,9 +1991,24 @@ export function App() {
     }
   }
 
+  function setSettingsVisibility(open: boolean): void {
+    if (!open && settingsDirty && !window.confirm('Discard unsaved settings changes?')) {
+      return
+    }
+    setSettingsOpen(open)
+    if (!open) {
+      setSettingsDirty(false)
+    }
+  }
+
   function selectSurface(next: Surface): void {
     setSurface(next)
-    if (next === 'reviews' && reviews[0] && review?.metadata.id !== reviews[0].id) {
+    if (
+      next === 'reviews' &&
+      !reviewRunning &&
+      reviews[0] &&
+      review?.metadata.id !== reviews[0].id
+    ) {
       void openReview(reviews[0].id)
     }
     if (next === 'activity' && !activity && runs[0]) {
@@ -1388,8 +2031,17 @@ export function App() {
     )
   }
 
+  const activeReview = resolveActiveReviewPresentation({
+    active: reviewStarting || reviewRunning,
+    enabledOptionalReviewerIds,
+    liveActivity,
+    progress,
+    repository,
+    reviewConfiguration: bootstrap.reviewConfiguration,
+  })
+
   return (
-    <Dialog onOpenChange={setSettingsOpen} open={settingsOpen}>
+    <Dialog onOpenChange={setSettingsVisibility} open={settingsOpen}>
       <main className="grid h-screen min-h-0 grid-cols-[15rem_minmax(0,1fr)] overflow-hidden bg-background text-foreground">
         <Sidebar
           bootstrap={bootstrap}
@@ -1410,23 +2062,30 @@ export function App() {
             {surface === 'repository' && (
               <div className="h-full overflow-auto">
                 <RepositorySurface
+                  activeReview={activeReview}
                   agentReady={bootstrap.agent.state === 'ready'}
                   busy={busy}
                   onChooseInstructions={() => void chooseInstructions()}
                   onRefresh={() => void refreshRepository()}
                   onSelectRepository={() => void openRepository()}
                   onStartReview={() => void startReview()}
+                  onToggleOptionalReviewer={toggleOptionalReviewer}
                   onUserStoryChange={setUserStory}
                   onUpdateBase={(base) => void updateBase(base)}
                   onUpdateInstructions={(path) => void updateInstructions(path)}
+                  onUpdateWorkflow={(workflowId) => void updateWorkflow(workflowId)}
                   progress={progress}
                   repository={repository}
+                  reviewConfiguration={bootstrap.reviewConfiguration}
+                  enabledOptionalReviewerIds={enabledOptionalReviewerIds}
                   userStory={userStory}
                 />
               </div>
             )}
             {surface === 'reviews' && (
               <ReviewsSurface
+                activeReview={activeReview}
+                onCancelReview={() => void cancelReview()}
                 onCloseSource={() => setSource(null)}
                 onCopy={copyText}
                 onDelete={(id) => void deleteReview(id)}
@@ -1450,7 +2109,7 @@ export function App() {
           </div>
         </section>
       </main>
-      <DialogContent className="flex h-[85vh] max-h-[52rem] min-h-[32rem] w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+      <DialogContent className="flex h-[85vh] max-h-[52rem] min-h-[32rem] w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-6xl">
         <DialogHeader className="shrink-0 border-b px-6 py-5 pr-14 text-left md:px-7">
           <DialogTitle className="text-2xl tracking-tight">Settings</DialogTitle>
           <DialogDescription>
@@ -1463,8 +2122,13 @@ export function App() {
             bootstrap={bootstrap}
             busy={busy}
             onChooseExecutable={() => void chooseExecutable()}
+            onDeleteReviewerProfile={deleteReviewerProfile}
+            onDeleteWorkflow={deleteWorkflow}
+            onDirtyChange={setSettingsDirty}
             onOpenLogFolder={() => void openLogFolder()}
             onRefreshAgent={() => void refreshAgent()}
+            onSaveReviewerProfile={saveReviewerProfile}
+            onSaveWorkflow={saveWorkflow}
             onUpdateSettings={(input) => void updateSettings(input)}
           />
         </ScrollArea>

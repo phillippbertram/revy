@@ -148,6 +148,7 @@ export class GitService {
       preferences: {
         baseBranch,
         instructionFile: selectedInstructionFile,
+        workflowId: preferences.workflowId,
       },
       root: canonicalRoot,
     }

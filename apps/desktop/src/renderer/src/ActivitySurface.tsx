@@ -21,6 +21,11 @@ import type {
   ReviewRunStatus,
   ReviewRunSummary,
 } from '../../shared/contracts.js'
+import {
+  resolveConsolidationStatus,
+  resolveWorkflowGraphReviewers,
+  WorkflowGraph,
+} from './WorkflowGraph'
 
 function formatDate(value: string): string {
   return new Intl.DateTimeFormat('en', {
@@ -55,6 +60,9 @@ function statusVariant(
 ): 'default' | 'destructive' | 'outline' | 'secondary' {
   if (status === 'completed') {
     return 'default'
+  }
+  if (status === 'completed-with-warnings') {
+    return 'secondary'
   }
   if (status === 'failed') {
     return 'destructive'
@@ -99,6 +107,7 @@ function ActivityIcon({ entry }: { entry: AgentActivityEntry }) {
 function ActivityEntry({ entry }: { entry: AgentActivityEntry }) {
   const hasDetails =
     Boolean(entry.name) ||
+    Boolean(entry.reviewer) ||
     entry.paths.length > 0 ||
     entry.durationMs !== null ||
     entry.exitCode !== null
@@ -124,6 +133,17 @@ function ActivityEntry({ entry }: { entry: AgentActivityEntry }) {
                 <>
                   <dt className="text-muted-foreground">Action</dt>
                   <dd className="font-mono">{entry.name}</dd>
+                </>
+              )}
+              {entry.reviewer && (
+                <>
+                  <dt className="text-muted-foreground">Reviewer</dt>
+                  <dd>
+                    {entry.reviewer.name} · {entry.reviewer.model} ·{' '}
+                    {entry.reviewer.reasoningEffort}
+                  </dd>
+                  <dt className="text-muted-foreground">Thread</dt>
+                  <dd className="truncate font-mono">{entry.reviewer.threadId}</dd>
                 </>
               )}
               {entry.paths.length > 0 && (
@@ -173,6 +193,9 @@ export function ActivitySurface({
   onOpenReview,
   runs,
 }: ActivitySurfaceProps) {
+  const graphReviewers = activity
+    ? resolveWorkflowGraphReviewers(activity.metadata.reviewPlan, activity.activity)
+    : []
   return (
     <div className="grid h-full min-h-0 min-w-0 grid-cols-[19rem_minmax(0,1fr)]">
       <aside className="min-h-0 min-w-0 overflow-hidden border-r bg-card/20">
@@ -211,6 +234,9 @@ export function ActivitySurface({
                     </Badge>
                   </div>
                   <p className="mt-1 truncate text-xs text-muted-foreground">{run.model}</p>
+                  <p className="mt-1 truncate text-xs text-muted-foreground">
+                    {run.reviewPlan.workflowName}
+                  </p>
                   <p className="mt-2 flex items-center gap-1 text-[0.68rem] text-muted-foreground">
                     <Clock3 className="size-3" />
                     {formatDate(run.startedAt)}
@@ -245,6 +271,7 @@ export function ActivitySurface({
                     </Badge>
                     <Badge variant="outline">{activity.metadata.model}</Badge>
                     <Badge variant="outline">{activity.metadata.reasoningEffort}</Badge>
+                    <Badge variant="outline">{activity.metadata.reviewPlan.workflowName}</Badge>
                   </div>
                   <h2 className="break-words text-2xl font-semibold tracking-tight [overflow-wrap:anywhere]">
                     {activity.metadata.branch ?? 'Detached HEAD'} → {activity.metadata.baseBranch}
@@ -276,6 +303,21 @@ export function ActivitySurface({
                   {activity.metadata.error}
                 </div>
               )}
+              {activity.metadata.reviewPlan.coverageStatus === 'partial' && (
+                <div className="mt-5 flex gap-3 rounded-xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm leading-6 text-amber-100">
+                  <AlertTriangle className="mt-1 size-4 shrink-0" />
+                  This run completed with partial reviewer coverage.
+                </div>
+              )}
+              <div className="mt-5">
+                <WorkflowGraph
+                  consolidationStatus={resolveConsolidationStatus(
+                    activity.metadata.status,
+                    graphReviewers,
+                  )}
+                  reviewers={graphReviewers}
+                />
+              </div>
             </header>
 
             {activity.activity.length === 0 ? (

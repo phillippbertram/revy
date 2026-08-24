@@ -5,22 +5,28 @@ import type {
   AgentActivityEntry,
   AppSettings,
   RepositoryPreferences,
+  ReviewConfiguration,
   ReviewContext,
   ReviewDocument,
+  ReviewerProfile,
   ReviewMetadata,
   ReviewRun,
   ReviewRunMetadata,
   ReviewRunSummary,
   ReviewSummary,
+  ReviewWorkflow,
   StructuredReview,
 } from '../shared/contracts.js'
 import {
   agentActivityEntrySchema,
   appSettingsSchema,
   repositoryPreferencesSchema,
+  reviewConfigurationSchema,
   reviewContextSchema,
+  reviewerProfileSchema,
   reviewMetadataSchema,
   reviewRunMetadataSchema,
+  reviewWorkflowSchema,
   structuredReviewSchema,
 } from '../shared/contracts.js'
 import { highestReviewPriority } from '../shared/review-formats.js'
@@ -40,6 +46,7 @@ const defaultSettings: AppSettings = {
 const defaultRepositoryPreferences: RepositoryPreferences = {
   baseBranch: null,
   instructionFile: null,
+  workflowId: null,
 }
 
 const defaultReviewContext: ReviewContext = {
@@ -56,7 +63,11 @@ function parseSettings(value: unknown): AppSettings {
 }
 
 function parseRepositoryPreferences(value: unknown): RepositoryPreferences {
-  const parsed = repositoryPreferencesSchema.safeParse(value)
+  const normalized =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? { ...defaultRepositoryPreferences, ...value }
+      : value
+  const parsed = repositoryPreferencesSchema.safeParse(normalized)
   return parsed.success ? parsed.data : { ...defaultRepositoryPreferences }
 }
 
@@ -203,6 +214,37 @@ export class AppStore {
     const nextSettings = { ...settings, recentRepositories }
     await this.saveSettings(nextSettings)
     return nextSettings
+  }
+
+  async getReviewConfiguration(): Promise<ReviewConfiguration> {
+    await this.initialize()
+    const [profiles, workflows] = await Promise.all([
+      this.readConfigurationDirectory('reviewer-profiles', reviewerProfileSchema),
+      this.readConfigurationDirectory('review-workflows', reviewWorkflowSchema),
+    ])
+    return reviewConfigurationSchema.parse({
+      profiles: profiles.sort((left, right) => left.name.localeCompare(right.name)),
+      workflows: workflows.sort((left, right) => left.name.localeCompare(right.name)),
+    })
+  }
+
+  async saveReviewerProfile(profile: ReviewerProfile): Promise<void> {
+    await this.saveConfigurationEntry('reviewer-profiles', reviewerProfileSchema.parse(profile))
+  }
+
+  async deleteReviewerProfile(profileId: string): Promise<void> {
+    await this.initialize()
+    await rm(join(this.root, 'reviewer-profiles', `${profileId}.json`), { force: true })
+  }
+
+  async saveReviewWorkflow(workflow: ReviewWorkflow): Promise<void> {
+    await this.saveConfigurationEntry('review-workflows', reviewWorkflowSchema.parse(workflow))
+  }
+
+  async deleteReviewWorkflow(workflowId: string): Promise<void> {
+    await this.initialize()
+    await rm(join(this.root, 'review-workflows', `${workflowId}.json`), { force: true })
+    await this.resetDeletedWorkflowPreferences(workflowId)
   }
 
   async getRepositoryPreferences(repositoryRoot: string): Promise<RepositoryPreferences> {
@@ -372,6 +414,12 @@ export class AppStore {
           findingCount: content?.findings.length ?? 0,
           hasUserStory: context.userStory !== null,
           highestPriority: content ? highestReviewPriority(content) : null,
+          selectedReviewerCount: metadata.data.reviewPlan.reviewers.filter(
+            (reviewer) => reviewer.selected,
+          ).length,
+          successfulReviewerCount: metadata.data.reviewPlan.reviewers.filter(
+            (reviewer) => reviewer.status === 'completed',
+          ).length,
           stale: metadata.data.fingerprint !== fingerprint,
         }
       }),
@@ -497,7 +545,11 @@ export class AppStore {
           endedAt,
           error: reviewExists ? null : 'Revy closed before the review run finished.',
           reviewId: reviewExists ? parsed.data.id : null,
-          status: reviewExists ? 'completed' : 'interrupted',
+          status: reviewExists
+            ? reviewMetadata.data?.reviewPlan.coverageStatus === 'partial'
+              ? 'completed-with-warnings'
+              : 'completed'
+            : 'interrupted',
         }
         await writeJsonAtomic(join(runDirectory, 'metadata.json'), metadata)
         const activity = await readActivity(join(runDirectory, 'activity.jsonl'))
@@ -531,6 +583,64 @@ export class AppStore {
     await mkdir(directory, { recursive: true })
     await writeJsonAtomic(join(directory, 'repository.json'), { root: repositoryRoot })
     return directory
+  }
+
+  private async readConfigurationDirectory<T extends { id: string }>(
+    directoryName: string,
+    schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } },
+  ): Promise<T[]> {
+    const directory = join(this.root, directoryName)
+    let entries: string[]
+    try {
+      entries = (await readdir(directory, { withFileTypes: true }))
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+        .map((entry) => entry.name)
+    } catch {
+      return []
+    }
+
+    const values: T[] = []
+    for (const entry of entries) {
+      const parsed = schema.safeParse(await readJson(join(directory, entry)))
+      if (!parsed.success || `${parsed.data.id}.json` !== entry) {
+        logger.warn('Ignored invalid review configuration entry', { entry })
+        continue
+      }
+      values.push(parsed.data)
+    }
+    return values
+  }
+
+  private async saveConfigurationEntry(
+    directoryName: string,
+    entry: ReviewerProfile | ReviewWorkflow,
+  ): Promise<void> {
+    await this.initialize()
+    const directory = join(this.root, directoryName)
+    await mkdir(directory, { recursive: true })
+    await writeJsonAtomic(join(directory, `${entry.id}.json`), entry)
+  }
+
+  private async resetDeletedWorkflowPreferences(workflowId: string): Promise<void> {
+    const repositoriesDirectory = join(this.root, 'repositories')
+    let repositories: string[]
+    try {
+      repositories = (await readdir(repositoriesDirectory, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+    } catch {
+      return
+    }
+
+    await Promise.all(
+      repositories.map(async (repositoryId) => {
+        const path = join(repositoriesDirectory, repositoryId, 'preferences.json')
+        const preferences = parseRepositoryPreferences(await readJson(path))
+        if (preferences.workflowId === workflowId) {
+          await writeJsonAtomic(path, { ...preferences, workflowId: null })
+        }
+      }),
+    )
   }
 
   private reviewDirectory(repositoryRoot: string, reviewId: string): string {

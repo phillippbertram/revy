@@ -17,6 +17,8 @@ export const ipcChannels = {
   repositorySelect: 'repository:select',
   repositorySelectInstructions: 'repository:select-instructions',
   repositoryUpdatePreferences: 'repository:update-preferences',
+  reviewerProfileDelete: 'reviewer-profile:delete',
+  reviewerProfileSave: 'reviewer-profile:save',
   reviewCancel: 'review:cancel',
   reviewDelete: 'review:delete',
   reviewList: 'review:list',
@@ -25,12 +27,164 @@ export const ipcChannels = {
   reviewReadSource: 'review:read-source',
   reviewStart: 'review:start',
   settingsUpdate: 'settings:update',
+  workflowDelete: 'workflow:delete',
+  workflowSave: 'workflow:save',
 } as const
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string }
 
 const pathSchema = z.string().min(1).max(4_096)
 const optionalSelectionSchema = z.string().min(1).max(256).nullable()
+
+export const standardReviewWorkflowId = 'standard'
+export const reviewConfigurationOriginSchema = z.enum(['built-in', 'custom'])
+export type ReviewConfigurationOrigin = z.infer<typeof reviewConfigurationOriginSchema>
+
+export const reviewerProfileSchema = z
+  .object({
+    description: z.string().trim().min(1).max(500),
+    id: z.uuid(),
+    instructions: z.string().trim().min(1).max(12_000),
+    model: optionalSelectionSchema,
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(80)
+      .refine((value) => !/[\r\n]/.test(value), 'Reviewer names must stay on one line.'),
+    origin: reviewConfigurationOriginSchema.default('custom'),
+    reasoningEffort: optionalSelectionSchema,
+  })
+  .strict()
+export type ReviewerProfile = z.infer<typeof reviewerProfileSchema>
+
+export const saveReviewerProfileInputSchema = reviewerProfileSchema
+  .omit({ id: true, origin: true })
+  .extend({ id: z.uuid().nullable() })
+  .strict()
+export type SaveReviewerProfileInput = z.infer<typeof saveReviewerProfileInputSchema>
+
+export const reviewWorkflowReviewerSchema = z
+  .object({
+    defaultEnabled: z.boolean(),
+    profileId: z.uuid(),
+    required: z.boolean(),
+  })
+  .strict()
+  .transform((value) => ({
+    ...value,
+    defaultEnabled: value.required ? true : value.defaultEnabled,
+  }))
+export type ReviewWorkflowReviewer = z.infer<typeof reviewWorkflowReviewerSchema>
+
+export const reviewWorkflowSchema = z
+  .object({
+    id: z.uuid(),
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(80)
+      .refine((value) => !/[\r\n]/.test(value), 'Workflow names must stay on one line.'),
+    origin: reviewConfigurationOriginSchema.default('custom'),
+    reviewers: z.array(reviewWorkflowReviewerSchema).min(1).max(24),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const profileIds = new Set<string>()
+    for (const [index, reviewer] of value.reviewers.entries()) {
+      if (profileIds.has(reviewer.profileId)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'A reviewer profile can only appear once in a workflow.',
+          path: ['reviewers', index, 'profileId'],
+        })
+      }
+      profileIds.add(reviewer.profileId)
+    }
+  })
+export type ReviewWorkflow = z.infer<typeof reviewWorkflowSchema>
+
+export const saveReviewWorkflowInputSchema = z
+  .object({
+    id: z.uuid().nullable(),
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(80)
+      .refine((value) => !/[\r\n]/.test(value), 'Workflow names must stay on one line.'),
+    reviewers: z.array(reviewWorkflowReviewerSchema).min(1).max(24),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const profileIds = new Set<string>()
+    for (const [index, reviewer] of value.reviewers.entries()) {
+      if (profileIds.has(reviewer.profileId)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'A reviewer profile can only appear once in a workflow.',
+          path: ['reviewers', index, 'profileId'],
+        })
+      }
+      profileIds.add(reviewer.profileId)
+    }
+  })
+export type SaveReviewWorkflowInput = z.infer<typeof saveReviewWorkflowInputSchema>
+
+export const reviewConfigurationSchema = z
+  .object({
+    profiles: z.array(reviewerProfileSchema),
+    workflows: z.array(reviewWorkflowSchema),
+  })
+  .strict()
+export type ReviewConfiguration = z.infer<typeof reviewConfigurationSchema>
+
+export const reviewerExecutionStatusSchema = z.enum([
+  'not-selected',
+  'pending',
+  'running',
+  'completed',
+  'failed',
+  'cancelled',
+])
+export type ReviewerExecutionStatus = z.infer<typeof reviewerExecutionStatusSchema>
+
+export const reviewCoverageStatusSchema = z.enum(['complete', 'partial'])
+export type ReviewCoverageStatus = z.infer<typeof reviewCoverageStatusSchema>
+
+export const resolvedReviewerSchema = z
+  .object({
+    description: z.string().min(1).max(500),
+    error: z.string().min(1).max(1_000).nullable(),
+    instructionsHash: z.string().length(64),
+    model: z.string().min(1),
+    name: z.string().min(1).max(80),
+    profileId: z.uuid(),
+    reasoningEffort: z.string().min(1),
+    required: z.boolean(),
+    selected: z.boolean(),
+    status: reviewerExecutionStatusSchema,
+  })
+  .strict()
+export type ResolvedReviewer = z.infer<typeof resolvedReviewerSchema>
+
+export const resolvedReviewPlanSchema = z
+  .object({
+    coverageStatus: reviewCoverageStatusSchema,
+    reviewers: z.array(resolvedReviewerSchema).max(24),
+    workflowId: z.uuid().nullable(),
+    workflowName: z.string().min(1).max(80),
+  })
+  .strict()
+export type ResolvedReviewPlan = z.infer<typeof resolvedReviewPlanSchema>
+
+export const standardResolvedReviewPlan: ResolvedReviewPlan = {
+  coverageStatus: 'complete',
+  reviewers: [],
+  workflowId: null,
+  workflowName: 'Standard Review',
+}
 
 export const reviewFormatSchema = z.enum([
   'conventional-comments',
@@ -55,6 +209,7 @@ export const repositoryPreferencesSchema = z
   .object({
     baseBranch: optionalSelectionSchema,
     instructionFile: pathSchema.nullable(),
+    workflowId: z.uuid().nullable(),
   })
   .strict()
 export type RepositoryPreferences = z.infer<typeof repositoryPreferencesSchema>
@@ -219,6 +374,7 @@ export const reviewMetadataSchema = z
     reasoningEffort: z.string().min(1),
     repositoryName: z.string().min(1),
     repositoryRoot: pathSchema,
+    reviewPlan: resolvedReviewPlanSchema.default(standardResolvedReviewPlan),
   })
   .strict()
 export type ReviewMetadata = z.infer<typeof reviewMetadataSchema>
@@ -228,6 +384,8 @@ export const reviewSummarySchema = reviewMetadataSchema
     findingCount: z.number().int().nonnegative(),
     hasUserStory: z.boolean(),
     highestPriority: reviewPrioritySchema.nullable(),
+    selectedReviewerCount: z.number().int().nonnegative(),
+    successfulReviewerCount: z.number().int().nonnegative(),
     stale: z.boolean(),
   })
   .strict()
@@ -249,7 +407,15 @@ export const reviewProgressSchema = z
     error: z.string().nullable(),
     message: z.string(),
     reviewId: z.uuid().nullable(),
-    state: z.enum(['cancelled', 'completed', 'failed', 'preparing', 'running', 'saving']),
+    state: z.enum([
+      'cancelled',
+      'completed',
+      'completed-with-warnings',
+      'failed',
+      'preparing',
+      'running',
+      'saving',
+    ]),
   })
   .strict()
 export type ReviewProgress = z.infer<typeof reviewProgressSchema>
@@ -259,6 +425,7 @@ export const reviewRunStatusSchema = z.enum([
   'running',
   'saving',
   'completed',
+  'completed-with-warnings',
   'cancelled',
   'failed',
   'interrupted',
@@ -294,6 +461,16 @@ export const agentActivityEntrySchema = z
     name: z.string().min(1).max(128).nullable(),
     occurredAt: z.iso.datetime(),
     paths: z.array(pathSchema).max(32),
+    reviewer: z
+      .object({
+        model: z.string().min(1),
+        name: z.string().min(1).max(80),
+        profileId: z.uuid(),
+        reasoningEffort: z.string().min(1),
+        threadId: z.string().min(1).max(256),
+      })
+      .strict()
+      .optional(),
     runId: z.uuid(),
     sequence: z.number().int().nonnegative(),
     status: activityEntryStatusSchema,
@@ -315,6 +492,7 @@ export const reviewRunMetadataSchema = z
     reasoningEffort: z.string().min(1),
     repositoryName: z.string().min(1),
     repositoryRoot: pathSchema,
+    reviewPlan: resolvedReviewPlanSchema.default(standardResolvedReviewPlan),
     reviewId: z.uuid().nullable(),
     startedAt: z.iso.datetime(),
     status: reviewRunStatusSchema,
@@ -358,7 +536,11 @@ export const sourcePreviewSchema = z
 export type SourcePreview = z.infer<typeof sourcePreviewSchema>
 
 export const bootstrapStateSchema = z
-  .object({ agent: agentStatusSchema, settings: appSettingsSchema })
+  .object({
+    agent: agentStatusSchema,
+    reviewConfiguration: reviewConfigurationSchema,
+    settings: appSettingsSchema,
+  })
   .strict()
 export type BootstrapState = z.infer<typeof bootstrapStateSchema>
 
@@ -380,11 +562,13 @@ export type UpdateRepositoryPreferencesInput = z.infer<
 export const startReviewInputSchema = z
   .object({
     baseBranch: z.string().min(1).max(256),
+    enabledOptionalReviewerIds: z.array(z.uuid()).max(24),
     userStory: z
       .string()
       .max(12_000)
       .nullable()
       .transform((value) => value?.trim() || null),
+    workflowId: z.uuid().nullable(),
   })
   .strict()
 export type StartReviewInput = z.infer<typeof startReviewInputSchema>
@@ -400,6 +584,8 @@ export const readSourceInputSchema = z
 export type ReadSourceInput = z.infer<typeof readSourceInputSchema>
 
 export const reviewIdSchema = z.uuid()
+export const reviewerProfileIdSchema = z.uuid()
+export const workflowIdSchema = z.uuid()
 export const recentRepositoryInputSchema = pathSchema
 export const optionalBaseBranchInputSchema = z.string().min(1).max(256).optional()
 export const clipboardTextSchema = z.string().min(1).max(200_000)
@@ -428,9 +614,13 @@ export interface RevyApi {
   refreshAgent(): Promise<Result<AgentStatus>>
   refreshRepository(baseBranch?: string): Promise<Result<RepositorySnapshot>>
   reportRendererError(input: RendererDiagnosticInput): void
+  saveReviewerProfile(input: SaveReviewerProfileInput): Promise<Result<ReviewConfiguration>>
+  saveWorkflow(input: SaveReviewWorkflowInput): Promise<Result<ReviewConfiguration>>
   selectInstructionFile(): Promise<Result<RepositorySnapshot>>
   selectRepository(): Promise<Result<RepositorySnapshot | null>>
   startReview(input: StartReviewInput): Promise<Result<ReviewDocument>>
+  deleteReviewerProfile(profileId: string): Promise<Result<ReviewConfiguration>>
+  deleteWorkflow(workflowId: string): Promise<Result<ReviewConfiguration>>
   updateRepositoryPreferences(
     input: UpdateRepositoryPreferencesInput,
   ): Promise<Result<RepositorySnapshot>>

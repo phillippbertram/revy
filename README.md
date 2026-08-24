@@ -13,6 +13,10 @@ The MVP provides:
 - read-only change discovery through the system Git installation;
 - one cancellable Codex review at a time, using models and reasoning efforts discovered from Codex
   App Server;
+- built-in Standard and Comprehensive workflows, four focused reviewer presets, and reusable custom
+  setups with required reviewers, per-run optional reviewers, and consolidated results;
+- explicit create/save states, duplicate-and-customize flows, and fixed workflow maps with reviewer
+  navigation, four-reviewer batches, pan/zoom controls, and animated live status;
 - optional per-review user-story context with explicit requirement and acceptance-criteria checks;
 - immutable structured review history with P0–P3 findings, summaries, and legacy Markdown support;
 - live and persistent agent activity for completed, failed, cancelled, and interrupted review runs;
@@ -39,9 +43,13 @@ pnpm install
 pnpm dev
 ```
 
-Open a repository, confirm its detected base branch, optionally add a user story or choose a project
-review skill, and start the review. Completed reviews and their story context remain available after
-restart alongside the activity of every run.
+Open a repository, confirm its detected base branch, optionally choose a workflow, user story, or
+project review skill, and start the review. Review Setup provides immutable presets and built-ins;
+duplicate one to customize it or explicitly create and save a new reviewer or workflow. Its fixed
+maps support pan, zoom, fit, and four-reviewer batch navigation without rearranging nodes. Starting
+a run opens its review page immediately, where progress and animated reviewer states update until
+the completed result replaces the live view. Completed reviews and their workflow coverage remain
+available after restart alongside the activity of every run.
 
 | Command | Purpose |
 | --- | --- |

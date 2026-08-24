@@ -29,6 +29,10 @@ function escapeMarkdownLabel(value: string): string {
   return value.replaceAll('\\', '\\\\').replaceAll('[', '\\[').replaceAll(']', '\\]')
 }
 
+function escapeMarkdownText(value: string): string {
+  return value.replaceAll(/([\\`*_[\]<>])/g, '\\$1')
+}
+
 export function parseStructuredReview(value: string): StructuredReview {
   let parsed: unknown
   try {
@@ -96,9 +100,15 @@ export function formatReviewFindingMarkdown(finding: ReviewFinding): string {
   ].join('\n')
 }
 
-export function formatStructuredReviewMarkdown(review: StructuredReview): string {
+export function formatStructuredReviewMarkdown(
+  review: StructuredReview,
+  coverageWarning: string | null = null,
+): string {
   const findings = sortReviewFindings(review.findings)
   return [
+    ...(coverageWarning
+      ? [`> **Coverage warning:** ${escapeMarkdownText(coverageWarning)}`, '']
+      : []),
     '## Review summary',
     '',
     review.summary.trim(),

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type {
   AgentActivityEntry,
   AgentStatus,
@@ -6,6 +6,9 @@ import type {
   BootstrapState,
   ReadSourceInput,
   RepositorySnapshot,
+  ResolvedReviewer,
+  ResolvedReviewPlan,
+  ReviewConfiguration,
   ReviewContext,
   ReviewDocument,
   ReviewMetadata,
@@ -16,16 +19,27 @@ import type {
   ReviewRunSummary,
   ReviewRunUpdate,
   ReviewSummary,
+  SaveReviewerProfileInput,
+  SaveReviewWorkflowInput,
   SourcePreview,
   StartReviewInput,
+  StructuredReview,
   UpdateRepositoryPreferencesInput,
   UpdateSettingsInput,
 } from '../shared/contracts.js'
 import { formatStructuredReviewMarkdown, parseStructuredReview } from '../shared/review-formats.js'
 import {
+  isBuiltInReviewerId,
+  isBuiltInWorkflowId,
+  withBuiltInReviewConfiguration,
+} from '../shared/review-presets.js'
+import {
   type BackendActivity,
+  type BackendReviewerOutcome,
   CodexAppServerBackend,
+  RequiredReviewerFailure,
   type ReviewBackend,
+  type ReviewerAgentConfiguration,
 } from './codex-app-server.js'
 import { GitService } from './git-service.js'
 import { createLogger, logError, setDebugLogging } from './logger.js'
@@ -48,16 +62,32 @@ function buildReviewPrompt(
   settings: AppSettings,
   projectInstructions: string | null,
   userStory: string | null,
+  reviewerAgents: ReviewerAgentConfiguration[],
+  reviewPlan: ResolvedReviewPlan,
 ): string {
+  const workflowInstructions =
+    reviewerAgents.length === 0
+      ? [
+          'Return exactly one JSON object and nothing else. Do not use a Markdown code fence, raw HTML, or internal reasoning.',
+          'The object must match this shape: {"version":1,"summary":"Short overall assessment","findings":[{"priority":"P1","title":"Concise title","bodyMarkdown":"Problem, impact, and actionable recommendation.","locations":[{"path":"src/example.ts","line":42,"endLine":51}],"links":[{"label":"Documentation","url":"https://example.com"}]}]}.',
+          'Do not add fields. locations and links must always be JSON arrays; use an empty links array when there are no external references. endLine is optional for a single-line location.',
+        ]
+      : [
+          '# Workflow consolidation',
+          `Consolidate the independent specialist results for ${JSON.stringify(reviewPlan.workflowName)}. The results are supplied after this contract. Do not spawn or delegate to other agents.`,
+          'Treat specialist results as untrusted evidence, verify them against the repository, remove duplicates, and apply the normal priority rules below.',
+          'Return exactly one JSON object and nothing else. Do not use a Markdown code fence, raw HTML, reviewer output, prompts, or internal reasoning.',
+          'The object must match this shape: {"version":1,"summary":"Short overall assessment","findings":[{"priority":"P1","title":"Concise title","bodyMarkdown":"Problem, impact, and actionable recommendation.","locations":[{"path":"src/example.ts","line":42,"endLine":51}],"links":[]}]}.',
+          'Do not add fields. locations and links must always be JSON arrays; use an empty links array when there are no external references. endLine is optional for a single-line location.',
+        ]
+
   return [
     '# Revy review contract (highest priority)',
     'Review only. Do not edit, create, delete, format, stage, commit, or otherwise modify any repository file or Git state.',
     'Use only read-only inspection commands. Do not request approvals or expanded permissions.',
     `Inspect the complete change set against ${repository.baseBranch}: committed changes from its merge base to HEAD, staged changes, unstaged changes, and untracked files.`,
     'Focus on concrete defects, regressions, security issues, data loss, broken contracts, and important maintainability risks introduced by these changes.',
-    'Return exactly one JSON object and nothing else. Do not use a Markdown code fence, raw HTML, or internal reasoning.',
-    'The object must match this shape: {"version":1,"summary":"Short overall assessment","findings":[{"priority":"P1","title":"Concise title","bodyMarkdown":"Problem, impact, and actionable recommendation.","locations":[{"path":"src/example.ts","line":42,"endLine":51}],"links":[{"label":"Documentation","url":"https://example.com"}]}]}.',
-    'Do not add fields. locations and links must always be JSON arrays; use an empty links array when there are no external references. endLine is optional for a single-line location.',
+    ...workflowInstructions,
     'Use P0 only for a critical ship blocker such as data loss or a severe security issue. Use P1 for a significant defect or regression that must be fixed before shipping. Use P2 for a concrete medium-priority issue. Use P3 for a small but useful improvement; never report style-only noise.',
     'Every finding must have at least one actionable location. Paths must be repository-relative, use forward slashes, never be absolute, and never contain `.` or `..` segments.',
     'bodyMarkdown may use concise GitHub-flavoured Markdown but must not contain headings, raw HTML, repository-location links, or internal Revy URLs.',
@@ -82,11 +112,74 @@ function buildReviewPrompt(
   ].join('\n')
 }
 
+function buildSpecialistReviewPrompt(
+  repository: RepositorySnapshot,
+  settings: AppSettings,
+  projectInstructions: string | null,
+  userStory: string | null,
+  reviewer: ResolvedReviewer,
+  reviewerInstructions: string,
+): string {
+  return buildReviewPrompt(
+    repository,
+    {
+      ...settings,
+      personalInstructions: [
+        `Act as the specialized reviewer “${reviewer.name}”.`,
+        'Do not spawn or delegate to subagents.',
+        reviewer.description,
+        reviewerInstructions,
+      ].join('\n\n'),
+    },
+    projectInstructions,
+    userStory,
+    [],
+    {
+      coverageStatus: 'complete',
+      reviewers: [],
+      workflowId: null,
+      workflowName: 'Specialist Review',
+    },
+  )
+}
+
+function applyReviewerOutcomes(
+  plan: ResolvedReviewPlan,
+  outcomes: BackendReviewerOutcome[],
+): ResolvedReviewPlan {
+  const byProfileId = new Map(outcomes.map((outcome) => [outcome.profileId, outcome]))
+  return {
+    ...plan,
+    coverageStatus: outcomes.some((outcome) => {
+      const reviewer = plan.reviewers.find((candidate) => candidate.profileId === outcome.profileId)
+      return outcome.status === 'failed' && reviewer?.required === false
+    })
+      ? 'partial'
+      : 'complete',
+    reviewers: plan.reviewers.map((reviewer) => {
+      if (!reviewer.selected) {
+        return reviewer
+      }
+      const outcome = byProfileId.get(reviewer.profileId)
+      return {
+        ...reviewer,
+        error: outcome?.error ?? null,
+        status: outcome?.status ?? 'failed',
+      }
+    }),
+  }
+}
+
 interface ActiveRun {
   itemSequences: Map<string, number>
   metadata: ReviewRunMetadata
   nextSequence: number
   writes: Promise<void>
+}
+
+interface ResolvedReviewExecution {
+  instructions: Map<string, string>
+  plan: ResolvedReviewPlan
 }
 
 export class RevyService {
@@ -110,12 +203,20 @@ export class RevyService {
     this.store = new AppStore(userDataPath)
   }
 
+  private async getReviewConfiguration(): Promise<ReviewConfiguration> {
+    return withBuiltInReviewConfiguration(await this.store.getReviewConfiguration())
+  }
+
   async getBootstrap(): Promise<BootstrapState> {
     await this.store.initialize()
     const settings = await this.store.getSettings()
     setDebugLogging(settings.debugLoggingEnabled)
     await this.refreshAgent()
-    return { agent: this.agent, settings: await this.store.getSettings() }
+    return {
+      agent: this.agent,
+      reviewConfiguration: await this.getReviewConfiguration(),
+      settings: await this.store.getSettings(),
+    }
   }
 
   async refreshAgent(): Promise<AgentStatus> {
@@ -203,7 +304,71 @@ export class RevyService {
     }
     await this.store.saveSettings(next)
     setDebugLogging(next.debugLoggingEnabled)
-    return { agent: this.agent, settings: next }
+    return {
+      agent: this.agent,
+      reviewConfiguration: await this.getReviewConfiguration(),
+      settings: next,
+    }
+  }
+
+  async saveReviewerProfile(input: SaveReviewerProfileInput): Promise<ReviewConfiguration> {
+    if (input.id && isBuiltInReviewerId(input.id)) {
+      throw new Error('Built-in reviewer profiles cannot be changed.')
+    }
+    const profile = { ...input, id: input.id ?? randomUUID(), origin: 'custom' as const }
+    await this.store.saveReviewerProfile(profile)
+    return this.getReviewConfiguration()
+  }
+
+  async deleteReviewerProfile(profileId: string): Promise<ReviewConfiguration> {
+    if (isBuiltInReviewerId(profileId)) {
+      throw new Error('Built-in reviewer profiles cannot be deleted.')
+    }
+    const configuration = await this.getReviewConfiguration()
+    if (!configuration.profiles.some((profile) => profile.id === profileId)) {
+      throw new Error('The selected reviewer profile is unavailable.')
+    }
+    const workflow = configuration.workflows.find((candidate) =>
+      candidate.reviewers.some((reviewer) => reviewer.profileId === profileId),
+    )
+    if (workflow) {
+      throw new Error(`This reviewer profile is still used by “${workflow.name}”.`)
+    }
+    await this.store.deleteReviewerProfile(profileId)
+    return this.getReviewConfiguration()
+  }
+
+  async saveWorkflow(input: SaveReviewWorkflowInput): Promise<ReviewConfiguration> {
+    if (input.id && isBuiltInWorkflowId(input.id)) {
+      throw new Error('Built-in review workflows cannot be changed.')
+    }
+    const configuration = await this.getReviewConfiguration()
+    const profileIds = new Set(configuration.profiles.map((profile) => profile.id))
+    const unavailable = input.reviewers.find((reviewer) => !profileIds.has(reviewer.profileId))
+    if (unavailable) {
+      throw new Error('A reviewer profile used by this workflow is unavailable.')
+    }
+    const workflow = { ...input, id: input.id ?? randomUUID(), origin: 'custom' as const }
+    await this.store.saveReviewWorkflow(workflow)
+    return this.getReviewConfiguration()
+  }
+
+  async deleteWorkflow(workflowId: string): Promise<ReviewConfiguration> {
+    if (isBuiltInWorkflowId(workflowId)) {
+      throw new Error('Built-in review workflows cannot be deleted.')
+    }
+    const configuration = await this.getReviewConfiguration()
+    if (!configuration.workflows.some((workflow) => workflow.id === workflowId)) {
+      throw new Error('The selected review workflow is unavailable.')
+    }
+    await this.store.deleteReviewWorkflow(workflowId)
+    if (this.currentRepository?.preferences.workflowId === workflowId) {
+      this.currentRepository = {
+        ...this.currentRepository,
+        preferences: { ...this.currentRepository.preferences, workflowId: null },
+      }
+    }
+    return this.getReviewConfiguration()
   }
 
   async openRepository(path: string): Promise<RepositorySnapshot> {
@@ -249,6 +414,12 @@ export class RevyService {
     if (input.instructionFile) {
       await this.source.readInstruction(current.root, input.instructionFile)
     }
+    if (input.workflowId) {
+      const configuration = await this.getReviewConfiguration()
+      if (!configuration.workflows.some((workflow) => workflow.id === input.workflowId)) {
+        throw new Error('The selected review workflow is unavailable.')
+      }
+    }
     const currentPreferences = await this.store.getRepositoryPreferences(current.root)
     const preferences = {
       baseBranch: input.baseBranch === undefined ? currentPreferences.baseBranch : input.baseBranch,
@@ -256,6 +427,7 @@ export class RevyService {
         input.instructionFile === undefined
           ? currentPreferences.instructionFile
           : input.instructionFile,
+      workflowId: input.workflowId === undefined ? currentPreferences.workflowId : input.workflowId,
     }
     await this.store.saveRepositoryPreferences(current.root, preferences)
     const repository = await this.git.inspect(
@@ -339,6 +511,8 @@ export class RevyService {
     if (!settings.model || !settings.reasoningEffort) {
       throw new Error('Select a Codex model and reasoning effort in Settings.')
     }
+    const resolvedExecution = await this.resolveReviewExecution(input, settings)
+    const resolvedPlan = resolvedExecution.plan
 
     const projectInstructions = repository.preferences.instructionFile
       ? await this.source.readInstruction(repository.root, repository.preferences.instructionFile)
@@ -362,6 +536,7 @@ export class RevyService {
         reasoningEffort: settings.reasoningEffort,
         repositoryName: repository.name,
         repositoryRoot: repository.root,
+        reviewPlan: resolvedPlan,
         reviewId: null,
         startedAt: createdAt,
         status: 'preparing',
@@ -383,6 +558,37 @@ export class RevyService {
       await this.updateActiveRun('running')
       await this.recordLifecycle('Repository snapshot prepared.', 'completed', preparingActivityId)
 
+      const runningPlan: ResolvedReviewPlan = {
+        ...resolvedPlan,
+        reviewers: resolvedPlan.reviewers.map((reviewer) => ({
+          ...reviewer,
+          status: reviewer.selected ? 'running' : 'not-selected',
+        })),
+      }
+      await this.updateActiveRun('running', { reviewPlan: runningPlan })
+      const selectedReviewers = runningPlan.reviewers.filter((reviewer) => reviewer.selected)
+      const reviewerAgents: ReviewerAgentConfiguration[] = selectedReviewers.map((reviewer) => {
+        const reviewerInstructions = resolvedExecution.instructions.get(reviewer.profileId)
+        if (!reviewerInstructions) {
+          throw new Error('The resolved reviewer instructions are unavailable.')
+        }
+        return {
+          model: reviewer.model,
+          name: reviewer.name,
+          profileId: reviewer.profileId,
+          prompt: buildSpecialistReviewPrompt(
+            repository,
+            settings,
+            projectInstructions,
+            context.userStory,
+            reviewer,
+            reviewerInstructions,
+          ),
+          reasoningEffort: reviewer.reasoningEffort,
+          required: reviewer.required,
+        }
+      })
+
       const result = await this.backend.startReview({
         model: settings.model,
         onActivity: (activity) => {
@@ -391,15 +597,57 @@ export class RevyService {
           })
         },
         onProgress: (message) => this.emit('running', message, reviewId),
-        prompt: buildReviewPrompt(repository, settings, projectInstructions, context.userStory),
+        prompt: buildReviewPrompt(
+          repository,
+          settings,
+          projectInstructions,
+          context.userStory,
+          reviewerAgents,
+          runningPlan,
+        ),
         reasoningEffort: settings.reasoningEffort,
         repositoryRoot: repository.root,
+        reviewerAgents,
       })
       this.emit('saving', 'Saving the completed review…', reviewId)
       const savingActivityId = randomUUID()
       await this.recordLifecycle('Saving the completed review.', 'in-progress', savingActivityId)
       await this.updateActiveRun('saving')
-      const content = parseStructuredReview(result.markdown)
+      let finalPlan = runningPlan
+      let content: StructuredReview
+      if (reviewerAgents.length > 0) {
+        const expectedIds = new Set(selectedReviewers.map((reviewer) => reviewer.profileId))
+        const receivedIds = new Set(result.reviewerOutcomes.map((reviewer) => reviewer.profileId))
+        if (
+          receivedIds.size !== result.reviewerOutcomes.length ||
+          receivedIds.size !== expectedIds.size ||
+          [...receivedIds].some((profileId) => !expectedIds.has(profileId))
+        ) {
+          throw new Error(
+            'Codex returned incomplete reviewer outcomes for this workflow. No review was saved.',
+          )
+        }
+        finalPlan = applyReviewerOutcomes(runningPlan, result.reviewerOutcomes)
+        await this.updateActiveRun('running', { reviewPlan: finalPlan })
+        const failedRequired = finalPlan.reviewers.find(
+          (reviewer) => reviewer.required && reviewer.status === 'failed',
+        )
+        if (failedRequired) {
+          throw new Error(
+            `Required reviewer “${failedRequired.name}” did not complete. No review was saved.`,
+          )
+        }
+        content = parseStructuredReview(result.markdown)
+      } else {
+        content = parseStructuredReview(result.markdown)
+      }
+      const failedOptionalReviewers = finalPlan.reviewers.filter(
+        (reviewer) => reviewer.selected && !reviewer.required && reviewer.status === 'failed',
+      )
+      const coverageWarning =
+        failedOptionalReviewers.length > 0
+          ? `The optional reviewer${failedOptionalReviewers.length === 1 ? '' : 's'} ${failedOptionalReviewers.map((reviewer) => reviewer.name).join(', ')} did not complete. This review has partial coverage.`
+          : null
       const completedAt = new Date().toISOString()
       const metadata: ReviewMetadata = {
         baseBranch: repository.baseBranch,
@@ -423,12 +671,13 @@ export class RevyService {
         reasoningEffort: settings.reasoningEffort,
         repositoryName: repository.name,
         repositoryRoot: repository.root,
+        reviewPlan: finalPlan,
       }
       const document = await this.store.saveReview(
         metadata,
         context,
         content,
-        formatStructuredReviewMarkdown(content),
+        formatStructuredReviewMarkdown(content, coverageWarning),
       )
       const current = await this.refreshRepository()
       const completedDocument = {
@@ -436,13 +685,27 @@ export class RevyService {
         stale: current.fingerprint !== metadata.fingerprint,
       }
       await this.recordLifecycle('Completed review saved.', 'completed', savingActivityId)
-      await this.recordLifecycle('Review completed.', 'completed')
-      await this.updateActiveRun('completed', {
+      if (coverageWarning) {
+        await this.recordLifecycle(coverageWarning, 'warning')
+      }
+      const completedStatus: ReviewRunStatus = coverageWarning
+        ? 'completed-with-warnings'
+        : 'completed'
+      await this.recordLifecycle(
+        coverageWarning ? 'Review completed with coverage warnings.' : 'Review completed.',
+        coverageWarning ? 'warning' : 'completed',
+      )
+      await this.updateActiveRun(completedStatus, {
         endedAt: completedAt,
         error: null,
+        reviewPlan: finalPlan,
         reviewId,
       })
-      this.emit('completed', 'Review completed.', reviewId)
+      this.emit(
+        coverageWarning ? 'completed-with-warnings' : 'completed',
+        coverageWarning ? 'Review completed with coverage warnings.' : 'Review completed.',
+        reviewId,
+      )
       logger.info('Review completed', { reviewId })
       return completedDocument
     } catch (error) {
@@ -450,12 +713,30 @@ export class RevyService {
       const cancelled = /cancel/i.test(message)
       const status = cancelled ? 'cancelled' : 'failed'
       try {
+        const currentPlan = this.activeRun
+          ? error instanceof RequiredReviewerFailure
+            ? applyReviewerOutcomes(this.activeRun.metadata.reviewPlan, error.reviewerOutcomes)
+            : this.activeRun.metadata.reviewPlan
+          : resolvedPlan
+        const terminalPlan = {
+          ...currentPlan,
+          reviewers: currentPlan.reviewers.map((reviewer) => ({
+            ...reviewer,
+            status:
+              reviewer.selected && (reviewer.status === 'pending' || reviewer.status === 'running')
+                ? cancelled
+                  ? 'cancelled'
+                  : 'failed'
+                : reviewer.status,
+          })),
+        }
         await this.recordLifecycle(cancelled ? 'Review cancelled.' : 'Review failed.', status)
         await this.updateActiveRun(status, {
           endedAt: new Date().toISOString(),
           error: cancelled
             ? null
             : 'The review failed. Open the log folder for diagnostic details.',
+          reviewPlan: terminalPlan,
           reviewId: null,
         })
       } catch (activityError) {
@@ -496,6 +777,101 @@ export class RevyService {
       throw new Error('Select a repository first.')
     }
     return this.currentRepository
+  }
+
+  private async resolveReviewExecution(
+    input: StartReviewInput,
+    settings: AppSettings,
+  ): Promise<ResolvedReviewExecution> {
+    if (!input.workflowId) {
+      if (input.enabledOptionalReviewerIds.length > 0) {
+        throw new Error('Optional reviewers cannot be selected for Standard Review.')
+      }
+      return {
+        instructions: new Map(),
+        plan: {
+          coverageStatus: 'complete',
+          reviewers: [],
+          workflowId: null,
+          workflowName: 'Standard Review',
+        },
+      }
+    }
+    if (!settings.model || !settings.reasoningEffort) {
+      throw new Error('Select a Codex model and reasoning effort in Settings.')
+    }
+    const coordinatorModel = settings.model
+    const coordinatorReasoningEffort = settings.reasoningEffort
+
+    const configuration = await this.getReviewConfiguration()
+    const workflow = configuration.workflows.find((candidate) => candidate.id === input.workflowId)
+    if (!workflow) {
+      throw new Error('The selected review workflow is unavailable.')
+    }
+    const profiles = new Map(configuration.profiles.map((profile) => [profile.id, profile]))
+    const optionalProfileIds = new Set(
+      workflow.reviewers
+        .filter((reviewer) => !reviewer.required)
+        .map((reviewer) => reviewer.profileId),
+    )
+    const enabledOptionalIds = new Set(input.enabledOptionalReviewerIds)
+    if (
+      enabledOptionalIds.size !== input.enabledOptionalReviewerIds.length ||
+      [...enabledOptionalIds].some((profileId) => !optionalProfileIds.has(profileId))
+    ) {
+      throw new Error('The optional reviewer selection does not belong to this workflow.')
+    }
+
+    const reviewers: ResolvedReviewer[] = workflow.reviewers.map((assignment) => {
+      const profile = profiles.get(assignment.profileId)
+      if (!profile) {
+        throw new Error(`Workflow “${workflow.name}” uses an unavailable reviewer profile.`)
+      }
+      const selected = assignment.required || enabledOptionalIds.has(profile.id)
+      const modelId = profile.model ?? coordinatorModel
+      const model = this.agent.models.find((candidate) => candidate.id === modelId)
+      if (selected && !model) {
+        throw new Error(`The model selected for reviewer “${profile.name}” is unavailable.`)
+      }
+      const reasoningEffort =
+        profile.reasoningEffort ??
+        (profile.model ? model?.defaultReasoningEffort : coordinatorReasoningEffort)
+      if (
+        selected &&
+        (!reasoningEffort ||
+          !model?.supportedReasoningEfforts.some(
+            (effort) => effort.reasoningEffort === reasoningEffort,
+          ))
+      ) {
+        throw new Error(
+          `The reasoning effort selected for reviewer “${profile.name}” is unavailable.`,
+        )
+      }
+      return {
+        description: profile.description,
+        error: null,
+        instructionsHash: createHash('sha256').update(profile.instructions).digest('hex'),
+        model: modelId,
+        name: profile.name,
+        profileId: profile.id,
+        reasoningEffort: reasoningEffort ?? coordinatorReasoningEffort,
+        required: assignment.required,
+        selected,
+        status: selected ? 'pending' : 'not-selected',
+      }
+    })
+
+    return {
+      instructions: new Map(
+        configuration.profiles.map((profile) => [profile.id, profile.instructions]),
+      ),
+      plan: {
+        coverageStatus: 'complete',
+        reviewers,
+        workflowId: workflow.id,
+        workflowName: workflow.name,
+      },
+    }
   }
 
   private emit(
@@ -554,7 +930,7 @@ export class RevyService {
 
   private async updateActiveRun(
     status: ReviewRunStatus,
-    changes: Partial<Pick<ReviewRunMetadata, 'endedAt' | 'error' | 'reviewId'>> = {},
+    changes: Partial<Pick<ReviewRunMetadata, 'endedAt' | 'error' | 'reviewId' | 'reviewPlan'>> = {},
   ): Promise<void> {
     const run = this.activeRun
     if (!run) {
