@@ -24,7 +24,6 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import type {
-  BootstrapState,
   ReviewerProfile,
   ReviewWorkflow,
   SaveReviewerProfileInput,
@@ -32,6 +31,8 @@ import type {
 } from '../../shared/contracts.js'
 import { standardReviewWorkflowId } from '../../shared/contracts.js'
 import { builtInReviewerProfiles } from '../../shared/review-presets.js'
+import { useAppStore } from './app-store'
+import { useRequiredBootstrap, useSettingsCommands } from './use-app-controller'
 import { WorkflowGraph, type WorkflowGraphReviewer } from './WorkflowGraph'
 
 type ReviewSetupView = 'preset-picker' | 'reviewer' | 'reviewer-library' | 'workflow'
@@ -99,25 +100,16 @@ function SaveIndicator({ dirty, state }: { dirty: boolean; state: SaveState }) {
   return <span />
 }
 
-interface ReviewSetupSettingsProps {
-  bootstrap: BootstrapState
-  busy: boolean
-  onDeleteReviewerProfile: (profileId: string) => Promise<boolean>
-  onDeleteWorkflow: (workflowId: string) => Promise<boolean>
-  onDirtyChange: (dirty: boolean) => void
-  onSaveReviewerProfile: (input: SaveReviewerProfileInput) => Promise<boolean>
-  onSaveWorkflow: (input: SaveReviewWorkflowInput) => Promise<boolean>
-}
-
-export function ReviewSetupSettings({
-  bootstrap,
-  busy,
-  onDeleteReviewerProfile,
-  onDeleteWorkflow,
-  onDirtyChange,
-  onSaveReviewerProfile,
-  onSaveWorkflow,
-}: ReviewSetupSettingsProps) {
+export function ReviewSetupSettings() {
+  const bootstrap = useRequiredBootstrap()
+  const busy = useAppStore((state) => state.busy)
+  const { setSettingsDirty } = useAppStore((state) => state.actions)
+  const {
+    deleteReviewerProfile,
+    deleteWorkflow,
+    saveReviewerProfile,
+    saveWorkflow: persistWorkflow,
+  } = useSettingsCommands()
   const [addReviewerOpen, setAddReviewerOpen] = useState(false)
   const [addCreatedReviewerToWorkflow, setAddCreatedReviewerToWorkflow] = useState(false)
   const [reviewerBackTarget, setReviewerBackTarget] = useState<'library' | 'workflow'>('workflow')
@@ -156,8 +148,8 @@ export function ReviewSetupSettings({
     : false
   const dirty = workflowDirty || reviewerDirty
 
-  useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange])
-  useEffect(() => () => onDirtyChange(false), [onDirtyChange])
+  useEffect(() => setSettingsDirty(dirty), [dirty, setSettingsDirty])
+  useEffect(() => () => setSettingsDirty(false), [setSettingsDirty])
 
   function confirmDiscard(message = 'Discard unsaved changes?'): boolean {
     return !dirty || window.confirm(message)
@@ -315,7 +307,7 @@ export function ReviewSetupSettings({
     const id = workflowDraftValue.id ?? crypto.randomUUID()
     const input = { ...workflowDraftValue, id }
     setWorkflowSaveState('saving')
-    if (!(await onSaveWorkflow(input))) {
+    if (!(await persistWorkflow(input))) {
       setWorkflowSaveState('idle')
       return
     }
@@ -329,7 +321,7 @@ export function ReviewSetupSettings({
     const id = reviewerDraftValue.id ?? crypto.randomUUID()
     const input = { ...reviewerDraftValue, id }
     setReviewerSaveState('saving')
-    if (!(await onSaveReviewerProfile(input))) {
+    if (!(await saveReviewerProfile(input))) {
       setReviewerSaveState('idle')
       return
     }
@@ -693,7 +685,7 @@ export function ReviewSetupSettings({
                     if (
                       id &&
                       window.confirm('Delete this reviewer profile?') &&
-                      (await onDeleteReviewerProfile(id))
+                      (await deleteReviewerProfile(id))
                     ) {
                       setReviewerDraftValue(emptyReviewer)
                       setReviewerBaseline(null)
@@ -1057,7 +1049,7 @@ export function ReviewSetupSettings({
                       if (
                         id &&
                         window.confirm('Delete this review workflow?') &&
-                        (await onDeleteWorkflow(id))
+                        (await deleteWorkflow(id))
                       ) {
                         setSelectedWorkflowId(standardReviewWorkflowId)
                         setWorkflowDraftValue(emptyWorkflow)

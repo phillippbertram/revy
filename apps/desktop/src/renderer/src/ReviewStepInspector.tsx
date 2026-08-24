@@ -19,23 +19,18 @@ import { useEffect, useMemo, useState } from 'react'
 import type {
   AgentActivityEntry,
   ReviewerExecutionStatus,
-  ReviewRun,
   ReviewStepDetail,
   StructuredReview,
 } from '../../shared/contracts.js'
 import { coordinatorReviewStepId, reviewerReviewStepId } from '../../shared/contracts.js'
 import { formatReviewLocation } from '../../shared/review-formats.js'
+import { type ReviewStepInspectorTab, type StepInspectorSelection, useAppStore } from './app-store'
 import { MarkdownReview } from './MarkdownReview'
+import { useReviewCommands } from './use-app-controller'
 
-export type ReviewStepInspectorTab = 'activity' | 'reasoning' | 'result'
-
-interface ReviewStepInspectorProps {
-  highlightedActivityId?: string | null | undefined
+interface ReviewStepInspectorContentProps extends StepInspectorSelection {
   onClose: () => void
   onOpenExternal: (url: string) => void
-  preferredTab?: ReviewStepInspectorTab | undefined
-  run: ReviewRun
-  stepId: string
 }
 
 function formatDate(value: string): string {
@@ -304,14 +299,14 @@ function ActivityContent({
   )
 }
 
-export function ReviewStepInspector({
+function ReviewStepInspectorContent({
   highlightedActivityId,
   onClose,
   onOpenExternal,
   preferredTab,
   run,
   stepId,
-}: ReviewStepInspectorProps) {
+}: ReviewStepInspectorContentProps) {
   const reviewer = run.metadata.reviewPlan.reviewers.find(
     (candidate) => reviewerReviewStepId(candidate.profileId) === stepId,
   )
@@ -427,5 +422,23 @@ export function ReviewStepInspector({
         </ScrollArea>
       </Tabs>
     </aside>
+  )
+}
+
+export function ReviewStepInspector() {
+  const selection = useAppStore((state) => state.stepInspector)
+  const { setStepInspector } = useAppStore((state) => state.actions)
+  const { openExternal } = useReviewCommands()
+
+  if (!selection) {
+    return null
+  }
+
+  return (
+    <ReviewStepInspectorContent
+      {...selection}
+      onClose={() => setStepInspector(null)}
+      onOpenExternal={(url) => void openExternal(url)}
+    />
   )
 }

@@ -47,23 +47,27 @@ import type {
   AgentActivityEntry,
   BootstrapState,
   RepositorySnapshot,
-  Result,
-  ReviewDocument,
   ReviewProgress,
   ReviewRun,
-  ReviewSummary,
-  SaveReviewerProfileInput,
-  SaveReviewWorkflowInput,
   SourcePreview,
 } from '../../shared/contracts.js'
 import { coordinatorReviewStepId } from '../../shared/contracts.js'
 import { formatLegacyReviewMarkdown } from '../../shared/review-formats.js'
 import { ActivitySurface } from './ActivitySurface'
 import { type Surface, useAppStore } from './app-store'
-import { type CodeReference, MarkdownReview } from './MarkdownReview'
+import { MarkdownReview } from './MarkdownReview'
 import { ReviewSetupSettings } from './ReviewSetupSettings'
-import { ReviewStepInspector, type ReviewStepInspectorTab } from './ReviewStepInspector'
+import { ReviewStepInspector } from './ReviewStepInspector'
 import { CopyButton, StructuredReview } from './StructuredReview'
+import {
+  useAppLifecycle,
+  useNavigationCommands,
+  useRepositoryCommands,
+  useRequiredBootstrap,
+  useReviewCommands,
+  useReviewRunning,
+  useSettingsCommands,
+} from './use-app-controller'
 import {
   resolveConsolidationStatus,
   resolveWorkflowGraphReviewers,
@@ -72,12 +76,7 @@ import {
 } from './WorkflowGraph'
 
 type SettingsPage = 'general' | 'review-setup'
-type InspectReviewStep = (
-  run: ReviewRun,
-  stepId: string,
-  tab?: ReviewStepInspectorTab,
-  activityId?: string,
-) => void
+type InspectReviewStep = ReturnType<typeof useRepositoryCommands>['inspectReviewStep']
 
 interface ActiveReviewPresentation {
   activity: AgentActivityEntry[]
@@ -159,38 +158,33 @@ function resolveActiveReviewPresentation({
   }
 }
 
-function unwrapResult<T>(result: Result<T>): T {
-  if (!result.ok) {
-    throw new Error(result.error)
-  }
-  return result.value
-}
+function useActiveReviewPresentation(): ActiveReviewPresentation | null {
+  const bootstrap = useRequiredBootstrap()
+  const enabledOptionalReviewerIds = useAppStore((state) => state.enabledOptionalReviewerIds)
+  const liveActivity = useAppStore((state) => state.liveActivity)
+  const progress = useAppStore((state) => state.progress)
+  const repository = useAppStore((state) => state.repository)
+  const reviewRunning = useReviewRunning()
 
-function legacyRunFromReview(review: ReviewDocument): ReviewRun {
-  return {
-    activity: [],
-    metadata: {
-      baseBranch: review.metadata.baseBranch,
-      branch: review.metadata.branch,
-      endedAt: review.metadata.completedAt,
-      error: null,
-      fingerprint: review.metadata.fingerprint,
-      headSha: review.metadata.headSha,
-      id: review.metadata.id,
-      model: review.metadata.model,
-      reasoningEffort: review.metadata.reasoningEffort,
-      repositoryName: review.metadata.repositoryName,
-      repositoryRoot: review.metadata.repositoryRoot,
-      reviewId: review.metadata.id,
-      reviewPlan: review.metadata.reviewPlan,
-      startedAt: review.metadata.createdAt,
-      status:
-        review.metadata.reviewPlan.coverageStatus === 'partial'
-          ? 'completed-with-warnings'
-          : 'completed',
-    },
-    steps: [],
-  }
+  return useMemo(
+    () =>
+      resolveActiveReviewPresentation({
+        active: reviewRunning,
+        enabledOptionalReviewerIds,
+        liveActivity,
+        progress,
+        repository,
+        reviewConfiguration: bootstrap.reviewConfiguration,
+      }),
+    [
+      bootstrap.reviewConfiguration,
+      enabledOptionalReviewerIds,
+      liveActivity,
+      progress,
+      repository,
+      reviewRunning,
+    ],
+  )
 }
 
 function formatDate(value: string): string {
@@ -202,25 +196,6 @@ function formatDate(value: string): string {
 
 function branchLabel(repository: RepositorySnapshot): string {
   return repository.branch ?? `Detached at ${repository.headSha?.slice(0, 8) ?? 'unborn'}`
-}
-
-function reportRendererError(
-  kind: 'error' | 'unhandled-rejection',
-  value: unknown,
-  fallback: string,
-): void {
-  const error = value instanceof Error ? value : null
-  const message = (error?.message || (typeof value === 'string' ? value : fallback)).slice(0, 4_000)
-  window.revy.reportRendererError({
-    kind,
-    message: message || fallback,
-    stack: error?.stack?.slice(0, 16_000) || null,
-  })
-}
-
-function isResizeObserverLoopError(value: unknown): boolean {
-  const message = value instanceof Error ? value.message : typeof value === 'string' ? value : ''
-  return message.startsWith('ResizeObserver loop')
 }
 
 function ErrorBanner({ error, onClose }: { error: string; onClose: () => void }) {
@@ -280,33 +255,21 @@ function SourcePanel({ onClose, source }: { onClose: () => void; source: SourceP
   )
 }
 
-interface SidebarProps {
-  bootstrap: BootstrapState
-  onCancelReview: () => void
-  onOpenActivity: () => void
-  onOpenRecent: (path: string) => void
-  onSelectRepository: () => void
-  onSelectSurface: (surface: Surface) => void
-  progress: ReviewProgress | null
-  repository: RepositorySnapshot | null
-  repositoryChangeDisabled: boolean
-  reviewRunning: boolean
-  surface: Surface
-}
-
-function Sidebar({
-  bootstrap,
-  onCancelReview,
-  onOpenActivity,
-  onOpenRecent,
-  onSelectRepository,
-  onSelectSurface,
-  progress,
-  repository,
-  repositoryChangeDisabled,
-  reviewRunning,
-  surface,
-}: SidebarProps) {
+function Sidebar() {
+  const bootstrap = useRequiredBootstrap()
+  const busy = useAppStore((state) => state.busy)
+  const progress = useAppStore((state) => state.progress)
+  const repository = useAppStore((state) => state.repository)
+  const surface = useAppStore((state) => state.surface)
+  const reviewRunning = useReviewRunning()
+  const { cancelReview, openLiveActivity, openRecent, openRepository, selectSurface } =
+    useNavigationCommands()
+  const onCancelReview = () => void cancelReview()
+  const onOpenActivity = openLiveActivity
+  const onOpenRecent = (path: string) => void openRecent(path)
+  const onSelectRepository = () => void openRepository()
+  const onSelectSurface = selectSurface
+  const repositoryChangeDisabled = busy || reviewRunning
   const items: Array<{ icon: typeof FolderGit2; id: Surface; label: string }> = [
     { icon: FolderGit2, id: 'repository', label: 'Overview' },
     { icon: History, id: 'reviews', label: 'Reviews' },
@@ -514,49 +477,33 @@ function Sidebar({
   )
 }
 
-interface RepositorySurfaceProps {
-  activeReview: ActiveReviewPresentation | null
-  agentReady: boolean
-  busy: boolean
-  onChooseInstructions: () => void
-  onInspectStep: InspectReviewStep
-  onRefresh: () => void
-  onSelectRepository: () => void
-  onStartReview: () => void
-  onToggleOptionalReviewer: (profileId: string, enabled: boolean) => void
-  onUserStoryChange: (value: string) => void
-  onUpdateBase: (base: string) => void
-  onUpdateInstructions: (path: string | null) => void
-  onUpdateWorkflow: (workflowId: string | null) => void
-  progress: ReviewProgress | null
-  repository: RepositorySnapshot | null
-  reviewConfiguration: BootstrapState['reviewConfiguration']
-  selectedStepId: string | null
-  enabledOptionalReviewerIds: string[]
-  userStory: string
-}
-
-function RepositorySurface({
-  activeReview,
-  agentReady,
-  busy,
-  onChooseInstructions,
-  onInspectStep,
-  onRefresh,
-  onSelectRepository,
-  onStartReview,
-  onToggleOptionalReviewer,
-  onUserStoryChange,
-  onUpdateBase,
-  onUpdateInstructions,
-  onUpdateWorkflow,
-  progress,
-  repository,
-  reviewConfiguration,
-  selectedStepId,
-  enabledOptionalReviewerIds,
-  userStory,
-}: RepositorySurfaceProps) {
+function RepositorySurface() {
+  const bootstrap = useRequiredBootstrap()
+  const activeReview = useActiveReviewPresentation()
+  const busy = useAppStore((state) => state.busy)
+  const enabledOptionalReviewerIds = useAppStore((state) => state.enabledOptionalReviewerIds)
+  const progress = useAppStore((state) => state.progress)
+  const repository = useAppStore((state) => state.repository)
+  const stepInspector = useAppStore((state) => state.stepInspector)
+  const userStory = useAppStore((state) => state.userStory)
+  const { setUserStory, toggleOptionalReviewer } = useAppStore((state) => state.actions)
+  const commands = useRepositoryCommands()
+  const agentReady = bootstrap.agent.state === 'ready'
+  const reviewConfiguration = bootstrap.reviewConfiguration
+  const selectedStepId =
+    stepInspector && stepInspector.run.metadata.id === activeReview?.run?.metadata.id
+      ? stepInspector.stepId
+      : null
+  const onChooseInstructions = () => void commands.chooseInstructions()
+  const onInspectStep = commands.inspectReviewStep
+  const onRefresh = () => void commands.refreshRepository()
+  const onSelectRepository = () => void commands.openRepository()
+  const onStartReview = () => void commands.startReview()
+  const onToggleOptionalReviewer = toggleOptionalReviewer
+  const onUserStoryChange = setUserStory
+  const onUpdateBase = (base: string) => void commands.updateBase(base)
+  const onUpdateInstructions = (path: string | null) => void commands.updateInstructions(path)
+  const onUpdateWorkflow = (workflowId: string | null) => void commands.updateWorkflow(workflowId)
   if (!repository) {
     return (
       <div className="flex h-full items-center justify-center p-10">
@@ -1025,39 +972,26 @@ function ActiveReviewProgressSurface({
   )
 }
 
-interface ReviewsSurfaceProps {
-  activeReview: ActiveReviewPresentation | null
-  onCancelReview: () => void
-  onCopy: (text: string) => Promise<boolean>
-  onDelete: (id: string) => void
-  onOpenExternal: (url: string) => void
-  onOpenReview: (id: string) => void
-  onOpenSource: (reference: CodeReference) => void
-  onInspectStep: InspectReviewStep
-  onCloseSource: () => void
-  review: ReviewDocument | null
-  reviewRun: ReviewRun | null
-  reviews: ReviewSummary[]
-  selectedStepId: string | null
-  source: SourcePreview | null
-}
-
-function ReviewsSurface({
-  activeReview,
-  onCancelReview,
-  onCloseSource,
-  onCopy,
-  onDelete,
-  onOpenExternal,
-  onOpenReview,
-  onOpenSource,
-  onInspectStep,
-  review,
-  reviewRun,
-  reviews,
-  selectedStepId,
-  source,
-}: ReviewsSurfaceProps) {
+function ReviewsSurface() {
+  const activeReview = useActiveReviewPresentation()
+  const review = useAppStore((state) => state.review)
+  const reviewRun = useAppStore((state) => state.reviewRun)
+  const reviews = useAppStore((state) => state.reviews)
+  const source = useAppStore((state) => state.source)
+  const stepInspector = useAppStore((state) => state.stepInspector)
+  const { setSource } = useAppStore((state) => state.actions)
+  const commands = useReviewCommands()
+  const selectedRunId = activeReview?.run?.metadata.id ?? reviewRun?.metadata.id
+  const selectedStepId =
+    stepInspector && stepInspector.run.metadata.id === selectedRunId ? stepInspector.stepId : null
+  const onCancelReview = () => void commands.cancelReview()
+  const onCloseSource = () => setSource(null)
+  const onCopy = commands.copyText
+  const onDelete = (id: string) => void commands.deleteReview(id)
+  const onInspectStep = commands.inspectReviewStep
+  const onOpenExternal = (url: string) => void commands.openExternal(url)
+  const onOpenReview = (id: string) => void commands.openReview(id)
+  const onOpenSource = commands.openSource
   return (
     <div
       className={`grid h-full min-h-0 min-w-0 ${
@@ -1331,38 +1265,19 @@ function ReviewsSurface({
   )
 }
 
-interface SettingsContentProps {
-  bootstrap: BootstrapState
-  busy: boolean
-  onChooseExecutable: () => void
-  onOpenLogFolder: () => void
-  onRefreshAgent: () => void
-  onDeleteReviewerProfile: (profileId: string) => Promise<boolean>
-  onDeleteWorkflow: (workflowId: string) => Promise<boolean>
-  onDirtyChange: (dirty: boolean) => void
-  onSaveReviewerProfile: (input: SaveReviewerProfileInput) => Promise<boolean>
-  onSaveWorkflow: (input: SaveReviewWorkflowInput) => Promise<boolean>
-  onUpdateSettings: (input: Parameters<typeof window.revy.updateSettings>[0]) => void
-}
-
-function SettingsContent({
-  bootstrap,
-  busy,
-  onChooseExecutable,
-  onOpenLogFolder,
-  onRefreshAgent,
-  onDeleteReviewerProfile,
-  onDeleteWorkflow,
-  onDirtyChange,
-  onSaveReviewerProfile,
-  onSaveWorkflow,
-  onUpdateSettings,
-}: SettingsContentProps) {
+function SettingsContent() {
+  const bootstrap = useRequiredBootstrap()
+  const busy = useAppStore((state) => state.busy)
+  const settingsDirty = useAppStore((state) => state.settingsDirty)
+  const commands = useSettingsCommands()
+  const onChooseExecutable = () => void commands.chooseExecutable()
+  const onOpenLogFolder = () => void commands.openLogFolder()
+  const onRefreshAgent = () => void commands.refreshAgent()
+  const onUpdateSettings = (input: Parameters<typeof window.revy.updateSettings>[0]) =>
+    void commands.updateSettings(input)
   const [instructions, setInstructions] = useState(bootstrap.settings.personalInstructions)
   const [page, setPage] = useState<SettingsPage>('general')
-  const [reviewSetupDirty, setReviewSetupDirty] = useState(false)
   useEffect(() => setInstructions(bootstrap.settings.personalInstructions), [bootstrap.settings])
-  useEffect(() => onDirtyChange(reviewSetupDirty), [onDirtyChange, reviewSetupDirty])
   const model = bootstrap.agent.models.find(
     (candidate) => candidate.id === bootstrap.settings.model,
   )
@@ -1375,13 +1290,10 @@ function SettingsContent({
     if (
       page === 'review-setup' &&
       nextPage !== 'review-setup' &&
-      reviewSetupDirty &&
+      settingsDirty &&
       !window.confirm('Discard unsaved review setup changes?')
     ) {
       return
-    }
-    if (page === 'review-setup' && nextPage !== 'review-setup') {
-      setReviewSetupDirty(false)
     }
     setPage(nextPage)
   }
@@ -1581,502 +1493,19 @@ function SettingsContent({
         </>
       )}
 
-      {page === 'review-setup' && (
-        <ReviewSetupSettings
-          bootstrap={bootstrap}
-          busy={busy}
-          onDeleteReviewerProfile={onDeleteReviewerProfile}
-          onDeleteWorkflow={onDeleteWorkflow}
-          onDirtyChange={setReviewSetupDirty}
-          onSaveReviewerProfile={onSaveReviewerProfile}
-          onSaveWorkflow={onSaveWorkflow}
-        />
-      )}
+      {page === 'review-setup' && <ReviewSetupSettings />}
     </div>
   )
 }
 
 export function App() {
-  const activity = useAppStore((state) => state.activity)
+  useAppLifecycle()
   const bootstrap = useAppStore((state) => state.bootstrap)
-  const busy = useAppStore((state) => state.busy)
-  const enabledOptionalReviewerIds = useAppStore((state) => state.enabledOptionalReviewerIds)
   const error = useAppStore((state) => state.error)
-  const liveActivity = useAppStore((state) => state.liveActivity)
-  const progress = useAppStore((state) => state.progress)
-  const repository = useAppStore((state) => state.repository)
-  const review = useAppStore((state) => state.review)
-  const reviewRun = useAppStore((state) => state.reviewRun)
-  const reviewStarting = useAppStore((state) => state.reviewStarting)
-  const reviews = useAppStore((state) => state.reviews)
-  const runs = useAppStore((state) => state.runs)
-  const settingsDirty = useAppStore((state) => state.settingsDirty)
   const settingsOpen = useAppStore((state) => state.settingsOpen)
-  const source = useAppStore((state) => state.source)
-  const stepInspector = useAppStore((state) => state.stepInspector)
   const surface = useAppStore((state) => state.surface)
-  const userStory = useAppStore((state) => state.userStory)
-  const {
-    acceptRepository,
-    applyActivityUpdate,
-    applyReviewConfiguration,
-    beginReview,
-    completeReview,
-    failReview,
-    openReview: presentReview,
-    setActivity,
-    setBootstrap,
-    setBusy,
-    setError,
-    setProgress,
-    setRepository,
-    setReview,
-    setReviewRun,
-    setReviewStarting,
-    setReviews,
-    setRuns,
-    setSettingsDirty,
-    setSettingsOpen,
-    setSource,
-    setStepInspector,
-    setSurface,
-    setUserStory,
-    syncOptionalReviewerDefaults,
-    toggleOptionalReviewer,
-  } = useAppStore((state) => state.actions)
-  const workflowDefaultsKey =
-    bootstrap?.reviewConfiguration.workflows
-      .map(
-        (workflow) =>
-          `${workflow.id}:${workflow.reviewers
-            .map(
-              (reviewer) => `${reviewer.profileId}:${reviewer.required}:${reviewer.defaultEnabled}`,
-            )
-            .join(',')}`,
-      )
-      .join('|') ?? ''
-
-  const reviewRunning = useMemo(
-    () =>
-      reviewStarting ||
-      Boolean(progress && ['preparing', 'running', 'saving'].includes(progress.state)),
-    [progress, reviewStarting],
-  )
-
-  useEffect(() => {
-    const unsubscribe = window.revy.onReviewProgress(setProgress)
-    const onError = (event: ErrorEvent): void => {
-      const value = event.error ?? event.message
-      if (isResizeObserverLoopError(value)) {
-        event.preventDefault()
-        return
-      }
-      reportRendererError('error', value, 'Renderer error')
-    }
-    const onUnhandledRejection = (event: PromiseRejectionEvent): void =>
-      reportRendererError('unhandled-rejection', event.reason, 'Unhandled renderer rejection')
-    window.addEventListener('error', onError)
-    window.addEventListener('unhandledrejection', onUnhandledRejection)
-    void (async () => {
-      try {
-        setBootstrap(unwrapResult(await window.revy.getBootstrap()))
-      } catch (caught) {
-        setError(caught instanceof Error ? caught.message : 'Revy could not start.')
-      }
-    })()
-    return () => {
-      unsubscribe()
-      window.removeEventListener('error', onError)
-      window.removeEventListener('unhandledrejection', onUnhandledRejection)
-    }
-  }, [])
-
-  useEffect(() => {
-    function openSettingsWithShortcut(event: KeyboardEvent): void {
-      if (
-        event.code === 'Comma' &&
-        (event.metaKey || event.ctrlKey) &&
-        !event.altKey &&
-        !event.shiftKey
-      ) {
-        event.preventDefault()
-        setSettingsOpen(true)
-      }
-    }
-
-    window.addEventListener('keydown', openSettingsWithShortcut)
-    return () => window.removeEventListener('keydown', openSettingsWithShortcut)
-  }, [])
-
-  useEffect(() => {
-    if (!repository) {
-      return undefined
-    }
-    return window.revy.onActivityUpdate((update) => {
-      applyActivityUpdate(update)
-    })
-  }, [applyActivityUpdate, repository])
-
-  useEffect(() => {
-    syncOptionalReviewerDefaults()
-  }, [
-    repository?.preferences.workflowId,
-    repository?.root,
-    syncOptionalReviewerDefaults,
-    workflowDefaultsKey,
-  ])
-
-  async function run(operation: () => Promise<void>): Promise<void> {
-    setBusy(true)
-    setError(null)
-    try {
-      await operation()
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'The operation failed.')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function readRunForReview(document: ReviewDocument): Promise<ReviewRun> {
-    const result = await window.revy.readActivity(document.metadata.id)
-    return result.ok ? result.value : legacyRunFromReview(document)
-  }
-
-  async function refreshHistory(openLatest = false): Promise<void> {
-    const nextReviews = unwrapResult(await window.revy.listReviews())
-    setReviews(nextReviews)
-    if (openLatest && nextReviews[0]) {
-      const document = unwrapResult(await window.revy.readReview(nextReviews[0].id))
-      presentReview(document, await readRunForReview(document))
-    }
-  }
-
-  async function refreshActivity(openLatest = false): Promise<void> {
-    const nextRuns = unwrapResult(await window.revy.listActivity())
-    setRuns(nextRuns)
-    if (openLatest && nextRuns[0]) {
-      setActivity(unwrapResult(await window.revy.readActivity(nextRuns[0].id)))
-    }
-  }
-
-  async function openRepository(): Promise<void> {
-    await run(async () => {
-      const selected = unwrapResult(await window.revy.selectRepository())
-      if (!selected) {
-        return
-      }
-      acceptRepository(selected)
-      await Promise.all([refreshHistory(), refreshActivity()])
-      setBootstrap(unwrapResult(await window.revy.updateSettings({})))
-      setSurface('repository')
-    })
-  }
-
-  async function openRecent(path: string): Promise<void> {
-    await run(async () => {
-      acceptRepository(unwrapResult(await window.revy.openRecentRepository(path)))
-      await Promise.all([refreshHistory(), refreshActivity()])
-      setSurface('repository')
-    })
-  }
-
-  async function refreshRepository(): Promise<void> {
-    await run(async () => {
-      acceptRepository(unwrapResult(await window.revy.refreshRepository()))
-      await Promise.all([refreshHistory(), refreshActivity()])
-    })
-  }
-
-  async function updateBase(baseBranch: string): Promise<void> {
-    await run(async () => {
-      setRepository(unwrapResult(await window.revy.refreshRepository(baseBranch)))
-      await Promise.all([refreshHistory(), refreshActivity()])
-    })
-  }
-
-  async function updateInstructions(instructionFile: string | null): Promise<void> {
-    await run(async () => {
-      setRepository(
-        unwrapResult(await window.revy.updateRepositoryPreferences({ instructionFile })),
-      )
-    })
-  }
-
-  async function updateWorkflow(workflowId: string | null): Promise<void> {
-    await run(async () => {
-      setRepository(unwrapResult(await window.revy.updateRepositoryPreferences({ workflowId })))
-    })
-  }
-
-  async function chooseInstructions(): Promise<void> {
-    await run(async () => {
-      setRepository(unwrapResult(await window.revy.selectInstructionFile()))
-    })
-  }
-
-  async function startReview(): Promise<void> {
-    if (!repository?.baseBranch) {
-      return
-    }
-    beginReview()
-    try {
-      const document = unwrapResult(
-        await window.revy.startReview({
-          baseBranch: repository.baseBranch,
-          enabledOptionalReviewerIds,
-          userStory: userStory.trim() || null,
-          workflowId: repository.preferences.workflowId,
-        }),
-      )
-      const [documentRun, nextRepository] = await Promise.all([
-        readRunForReview(document),
-        window.revy.refreshRepository().then(unwrapResult),
-      ])
-      completeReview(document, documentRun, nextRepository)
-      await Promise.all([refreshHistory(), refreshActivity()])
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : 'The review failed.'
-      failReview(message)
-    } finally {
-      setReviewStarting(false)
-    }
-  }
-
-  async function cancelReview(): Promise<void> {
-    if (!progress?.reviewId) {
-      return
-    }
-    await run(async () => {
-      unwrapResult(await window.revy.cancelReview())
-    })
-  }
-
-  async function openReview(id: string): Promise<void> {
-    await run(async () => {
-      const document = unwrapResult(await window.revy.readReview(id))
-      presentReview(document, await readRunForReview(document))
-    })
-  }
-
-  async function deleteReview(id: string): Promise<void> {
-    if (!window.confirm('Delete this review and its activity permanently?')) {
-      return
-    }
-    await run(async () => {
-      const nextReviews = unwrapResult(await window.revy.deleteReview(id))
-      setReviews(nextReviews)
-      setRuns(unwrapResult(await window.revy.listActivity()))
-      setActivity((current) => (current?.metadata.id === id ? null : current))
-      setReview(null)
-      setReviewRun(null)
-      setSource(null)
-      setStepInspector(null)
-    })
-  }
-
-  async function openActivity(id: string): Promise<void> {
-    await run(async () => {
-      setActivity(unwrapResult(await window.revy.readActivity(id)))
-      setStepInspector(null)
-    })
-  }
-
-  async function deleteActivity(id: string): Promise<void> {
-    if (!window.confirm('Delete this run and its review, if one exists?')) {
-      return
-    }
-    await run(async () => {
-      setRuns(unwrapResult(await window.revy.deleteActivity(id)))
-      setActivity(null)
-      setStepInspector(null)
-      await refreshHistory()
-    })
-  }
-
-  function inspectReviewStep(
-    run: ReviewRun,
-    stepId: string,
-    preferredTab?: ReviewStepInspectorTab,
-    activityId?: string,
-  ): void {
-    setStepInspector({
-      highlightedActivityId: activityId ?? null,
-      preferredTab,
-      run,
-      stepId,
-    })
-  }
-
-  async function openReviewFromActivity(id: string): Promise<void> {
-    await openReview(id)
-    setSurface('reviews')
-  }
-
-  async function openSource(reference: CodeReference): Promise<void> {
-    if (!review) {
-      return
-    }
-    await run(async () => {
-      setSource(
-        unwrapResult(
-          await window.revy.readSource({
-            endLine: reference.endLine,
-            line: reference.line,
-            path: reference.path,
-            reviewId: review.metadata.id,
-          }),
-        ),
-      )
-    })
-  }
-
-  async function copyText(text: string): Promise<boolean> {
-    setError(null)
-    try {
-      unwrapResult(await window.revy.copyText(text))
-      return true
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'The review could not be copied.')
-      return false
-    }
-  }
-
-  async function openExternal(url: string): Promise<void> {
-    setError(null)
-    try {
-      unwrapResult(await window.revy.openExternal(url))
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'The external link could not be opened.')
-    }
-  }
-
-  async function refreshAgent(): Promise<void> {
-    await run(async () => {
-      unwrapResult(await window.revy.refreshAgent())
-      setBootstrap(unwrapResult(await window.revy.updateSettings({})))
-    })
-  }
-
-  async function chooseExecutable(): Promise<void> {
-    await run(async () => {
-      unwrapResult(await window.revy.chooseCodexExecutable())
-      setBootstrap(unwrapResult(await window.revy.updateSettings({})))
-    })
-  }
-
-  async function updateSettings(
-    input: Parameters<typeof window.revy.updateSettings>[0],
-  ): Promise<void> {
-    await run(async () => {
-      setBootstrap(unwrapResult(await window.revy.updateSettings(input)))
-    })
-  }
-
-  async function saveReviewerProfile(input: SaveReviewerProfileInput): Promise<boolean> {
-    setBusy(true)
-    setError(null)
-    try {
-      const reviewConfiguration = unwrapResult(await window.revy.saveReviewerProfile(input))
-      applyReviewConfiguration(reviewConfiguration)
-      return true
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'The reviewer could not be saved.')
-      return false
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function deleteReviewerProfile(profileId: string): Promise<boolean> {
-    setBusy(true)
-    setError(null)
-    try {
-      const reviewConfiguration = unwrapResult(await window.revy.deleteReviewerProfile(profileId))
-      applyReviewConfiguration(reviewConfiguration)
-      return true
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'The reviewer could not be deleted.')
-      return false
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function saveWorkflow(input: SaveReviewWorkflowInput): Promise<boolean> {
-    setBusy(true)
-    setError(null)
-    try {
-      const reviewConfiguration = unwrapResult(await window.revy.saveWorkflow(input))
-      applyReviewConfiguration(reviewConfiguration)
-      return true
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'The workflow could not be saved.')
-      return false
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function deleteWorkflow(workflowId: string): Promise<boolean> {
-    setBusy(true)
-    setError(null)
-    try {
-      const reviewConfiguration = unwrapResult(await window.revy.deleteWorkflow(workflowId))
-      applyReviewConfiguration(reviewConfiguration, workflowId)
-      return true
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'The workflow could not be deleted.')
-      return false
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function openLogFolder(): Promise<void> {
-    await run(async () => {
-      unwrapResult(await window.revy.openLogFolder())
-    })
-  }
-
-  function openLiveActivity(): void {
-    setStepInspector(null)
-    setSurface('activity')
-    if (progress?.reviewId) {
-      void openActivity(progress.reviewId)
-      return
-    }
-    if (!activity && runs[0]) {
-      void openActivity(runs[0].id)
-    }
-  }
-
-  function setSettingsVisibility(open: boolean): void {
-    if (!open && settingsDirty && !window.confirm('Discard unsaved settings changes?')) {
-      return
-    }
-    setSettingsOpen(open)
-    if (!open) {
-      setSettingsDirty(false)
-    }
-  }
-
-  function selectSurface(next: Surface): void {
-    setStepInspector(null)
-    setSurface(next)
-    if (
-      next === 'reviews' &&
-      !reviewRunning &&
-      reviews[0] &&
-      review?.metadata.id !== reviews[0].id
-    ) {
-      void openReview(reviews[0].id)
-    }
-    if (next === 'activity' && !activity && runs[0]) {
-      void openActivity(runs[0].id)
-    }
-  }
-
+  const { setError } = useAppStore((state) => state.actions)
+  const { setSettingsVisibility } = useNavigationCommands()
   if (!bootstrap) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background text-foreground">
@@ -2092,34 +1521,10 @@ export function App() {
     )
   }
 
-  const activeReview = resolveActiveReviewPresentation({
-    active: reviewStarting || reviewRunning,
-    enabledOptionalReviewerIds,
-    liveActivity,
-    progress,
-    repository,
-    reviewConfiguration: bootstrap.reviewConfiguration,
-  })
-  const inspectedRunId = stepInspector?.run.metadata.id ?? null
-  const inspectedStepId = stepInspector?.stepId ?? null
-  const inspectedActivityId = stepInspector?.highlightedActivityId ?? null
-
   return (
     <Dialog onOpenChange={setSettingsVisibility} open={settingsOpen}>
       <main className="grid h-screen min-h-0 grid-cols-[15rem_minmax(0,1fr)] overflow-hidden bg-background text-foreground">
-        <Sidebar
-          bootstrap={bootstrap}
-          onCancelReview={() => void cancelReview()}
-          onOpenActivity={openLiveActivity}
-          onOpenRecent={(path) => void openRecent(path)}
-          onSelectRepository={() => void openRepository()}
-          onSelectSurface={selectSurface}
-          progress={progress}
-          repository={repository}
-          repositoryChangeDisabled={busy || reviewRunning}
-          reviewRunning={reviewRunning}
-          surface={surface}
-        />
+        <Sidebar />
         <section className="relative min-h-0 min-w-0 overflow-hidden">
           {error && <ErrorBanner error={error} onClose={() => setError(null)} />}
           <div
@@ -2130,78 +1535,13 @@ export function App() {
             <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
               {surface === 'repository' && (
                 <div className="h-full overflow-auto">
-                  <RepositorySurface
-                    activeReview={activeReview}
-                    agentReady={bootstrap.agent.state === 'ready'}
-                    busy={busy}
-                    onChooseInstructions={() => void chooseInstructions()}
-                    onInspectStep={inspectReviewStep}
-                    onRefresh={() => void refreshRepository()}
-                    onSelectRepository={() => void openRepository()}
-                    onStartReview={() => void startReview()}
-                    onToggleOptionalReviewer={toggleOptionalReviewer}
-                    onUserStoryChange={setUserStory}
-                    onUpdateBase={(base) => void updateBase(base)}
-                    onUpdateInstructions={(path) => void updateInstructions(path)}
-                    onUpdateWorkflow={(workflowId) => void updateWorkflow(workflowId)}
-                    progress={progress}
-                    repository={repository}
-                    reviewConfiguration={bootstrap.reviewConfiguration}
-                    selectedStepId={
-                      inspectedRunId === activeReview?.run?.metadata.id ? inspectedStepId : null
-                    }
-                    enabledOptionalReviewerIds={enabledOptionalReviewerIds}
-                    userStory={userStory}
-                  />
+                  <RepositorySurface />
                 </div>
               )}
-              {surface === 'reviews' && (
-                <ReviewsSurface
-                  activeReview={activeReview}
-                  onCancelReview={() => void cancelReview()}
-                  onCloseSource={() => setSource(null)}
-                  onCopy={copyText}
-                  onDelete={(id) => void deleteReview(id)}
-                  onInspectStep={inspectReviewStep}
-                  onOpenExternal={(url) => void openExternal(url)}
-                  onOpenReview={(id) => void openReview(id)}
-                  onOpenSource={(reference) => void openSource(reference)}
-                  review={review}
-                  reviewRun={reviewRun}
-                  reviews={reviews}
-                  selectedStepId={
-                    inspectedRunId === (activeReview?.run?.metadata.id ?? reviewRun?.metadata.id)
-                      ? inspectedStepId
-                      : null
-                  }
-                  source={source}
-                />
-              )}
-              {surface === 'activity' && (
-                <ActivitySurface
-                  activity={activity}
-                  onDelete={(id) => void deleteActivity(id)}
-                  onInspectStep={inspectReviewStep}
-                  onOpen={(id) => void openActivity(id)}
-                  onOpenReview={(id) => void openReviewFromActivity(id)}
-                  runs={runs}
-                  selectedActivityId={
-                    inspectedRunId === activity?.metadata.id ? inspectedActivityId : null
-                  }
-                  selectedStepId={inspectedRunId === activity?.metadata.id ? inspectedStepId : null}
-                />
-              )}
+              {surface === 'reviews' && <ReviewsSurface />}
+              {surface === 'activity' && <ActivitySurface />}
             </div>
-            {stepInspector && (
-              <ReviewStepInspector
-                highlightedActivityId={stepInspector.highlightedActivityId}
-                onClose={() => setStepInspector(null)}
-                onOpenExternal={(url) => void openExternal(url)}
-                preferredTab={stepInspector.preferredTab}
-                run={stepInspector.run}
-                stepId={stepInspector.stepId}
-              />
-            )}
+            <ReviewStepInspector />
           </div>
         </section>
       </main>
@@ -2214,19 +1554,7 @@ export function App() {
         </DialogHeader>
         {error && <ErrorBanner error={error} onClose={() => setError(null)} />}
         <ScrollArea className="min-h-0 flex-1">
-          <SettingsContent
-            bootstrap={bootstrap}
-            busy={busy}
-            onChooseExecutable={() => void chooseExecutable()}
-            onDeleteReviewerProfile={deleteReviewerProfile}
-            onDeleteWorkflow={deleteWorkflow}
-            onDirtyChange={setSettingsDirty}
-            onOpenLogFolder={() => void openLogFolder()}
-            onRefreshAgent={() => void refreshAgent()}
-            onSaveReviewerProfile={saveReviewerProfile}
-            onSaveWorkflow={saveWorkflow}
-            onUpdateSettings={(input) => void updateSettings(input)}
-          />
+          <SettingsContent />
         </ScrollArea>
       </DialogContent>
     </Dialog>

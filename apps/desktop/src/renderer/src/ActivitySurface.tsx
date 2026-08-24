@@ -17,11 +17,12 @@ import {
 } from 'lucide-react'
 import type {
   AgentActivityEntry,
-  ReviewRun,
   ReviewRunStatus,
   ReviewRunSummary,
 } from '../../shared/contracts.js'
 import { coordinatorReviewStepId } from '../../shared/contracts.js'
+import { useAppStore } from './app-store'
+import { useActivityCommands } from './use-app-controller'
 import {
   resolveConsolidationStatus,
   resolveWorkflowGraphReviewers,
@@ -205,27 +206,23 @@ function ActivityEntry({
   )
 }
 
-interface ActivitySurfaceProps {
-  activity: ReviewRun | null
-  onDelete: (id: string) => void
-  onOpen: (id: string) => void
-  onOpenReview: (id: string) => void
-  onInspectStep: (run: ReviewRun, stepId: string, tab: 'activity', activityId?: string) => void
-  runs: ReviewRunSummary[]
-  selectedActivityId: string | null
-  selectedStepId: string | null
-}
-
-export function ActivitySurface({
-  activity,
-  onDelete,
-  onOpen,
-  onOpenReview,
-  onInspectStep,
-  runs,
-  selectedActivityId,
-  selectedStepId,
-}: ActivitySurfaceProps) {
+export function ActivitySurface() {
+  const activity = useAppStore((state) => state.activity)
+  const runs = useAppStore((state) => state.runs)
+  const stepInspector = useAppStore((state) => state.stepInspector)
+  const commands = useActivityCommands()
+  const selectedActivityId =
+    stepInspector && stepInspector.run.metadata.id === activity?.metadata.id
+      ? stepInspector.highlightedActivityId
+      : null
+  const selectedStepId =
+    stepInspector && stepInspector.run.metadata.id === activity?.metadata.id
+      ? stepInspector.stepId
+      : null
+  const onDelete = (id: string) => void commands.deleteActivity(id)
+  const onInspectStep = commands.inspectReviewStep
+  const onOpen = (id: string) => void commands.openActivity(id)
+  const onOpenReview = (id: string) => void commands.openReviewFromActivity(id)
   const graphReviewers = activity
     ? resolveWorkflowGraphReviewers(activity.metadata.reviewPlan, activity.activity, activity.steps)
     : []

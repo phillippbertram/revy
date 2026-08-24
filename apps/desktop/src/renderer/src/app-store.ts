@@ -11,9 +11,9 @@ import type {
   ReviewSummary,
   SourcePreview,
 } from '../../shared/contracts.js'
-import type { ReviewStepInspectorTab } from './ReviewStepInspector'
 
 export type Surface = 'activity' | 'repository' | 'reviews'
+export type ReviewStepInspectorTab = 'activity' | 'reasoning' | 'result'
 
 export interface StepInspectorSelection {
   highlightedActivityId: string | null
