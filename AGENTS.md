@@ -53,5 +53,8 @@
 - Inspect staged and unstaged changes separately and preserve unrelated user work.
 - Do not stage, commit, amend, push, publish, or open a pull request unless explicitly requested.
 - Use concise English Conventional Commit subjects when a commit is requested.
-- Keep `README.md` concise and user-facing. Keep architecture and module-placement rules canonical
-  in `docs/architecture.md` and update it when those boundaries change.
+- Treat documentation updates as part of done when product capabilities or architecture boundaries
+  change. Keep the current high-level feature set concise and user-facing in `README.md`.
+- Keep architecture and module-placement rules canonical in `docs/architecture.md`. Explain the
+  system for orientation, not as an implementation reference; avoid low-level protocol details and
+  duplicated source-code documentation.

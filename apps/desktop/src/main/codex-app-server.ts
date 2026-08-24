@@ -22,89 +22,79 @@ import type { TurnStartedNotification } from '../generated/codex-app-server/v2/T
 import type { AgentStatus, CodexModel } from '../shared/contracts.js'
 
 const requestIdSchema = z.union([z.string(), z.number().int()])
-const rpcErrorSchema = z
-  .object({ code: z.number().int(), data: z.unknown().optional(), message: z.string() })
-  .passthrough()
-const rpcMessageSchema = z
-  .object({
-    error: rpcErrorSchema.optional(),
-    id: requestIdSchema.optional(),
-    method: z.string().optional(),
-    params: z.unknown().optional(),
-    result: z.unknown().optional(),
-  })
-  .passthrough()
+const rpcErrorSchema = z.looseObject({
+  code: z.number().int(),
+  data: z.unknown().optional(),
+  message: z.string(),
+})
+const rpcMessageSchema = z.looseObject({
+  error: rpcErrorSchema.optional(),
+  id: requestIdSchema.optional(),
+  method: z.string().optional(),
+  params: z.unknown().optional(),
+  result: z.unknown().optional(),
+})
 
 const accountSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('apiKey') }).passthrough(),
-  z
-    .object({ email: z.string().nullable(), planType: z.string(), type: z.literal('chatgpt') })
-    .passthrough(),
-  z
-    .object({ type: z.literal('amazonBedrock'), usesCodexManagedCredentials: z.boolean() })
-    .passthrough(),
+  z.looseObject({ type: z.literal('apiKey') }),
+  z.looseObject({
+    email: z.string().nullable(),
+    planType: z.string(),
+    type: z.literal('chatgpt'),
+  }),
+  z.looseObject({
+    type: z.literal('amazonBedrock'),
+    usesCodexManagedCredentials: z.boolean(),
+  }),
 ])
-const accountResponseSchema = z
-  .object({ account: accountSchema.nullable(), requiresOpenaiAuth: z.boolean() })
-  .passthrough()
-const modelResponseSchema = z
-  .object({
-    data: z.array(
-      z
-        .object({
-          defaultReasoningEffort: z.string().min(1),
-          displayName: z.string().min(1),
-          hidden: z.boolean(),
-          id: z.string().min(1),
-          isDefault: z.boolean(),
-          supportedReasoningEfforts: z.array(
-            z.object({ description: z.string(), reasoningEffort: z.string().min(1) }).passthrough(),
-          ),
-        })
-        .passthrough(),
-    ),
-    nextCursor: z.string().nullable().optional(),
-  })
-  .passthrough()
-const threadStartResponseSchema = z
-  .object({
-    instructionSources: z.array(z.string()).optional(),
-    thread: z.object({ id: z.string().min(1) }).passthrough(),
-  })
-  .passthrough()
-const reviewStartResponseSchema = z
-  .object({
-    reviewThreadId: z.string().min(1),
-    turn: z.object({ id: z.string().min(1) }).passthrough(),
-  })
-  .passthrough()
-const itemCompletedSchema = z
-  .object({
-    item: z
-      .object({ id: z.string(), review: z.string(), type: z.literal('exitedReviewMode') })
-      .passthrough(),
-    threadId: z.string(),
-    turnId: z.string(),
-  })
-  .passthrough()
-const turnCompletedSchema = z
-  .object({
-    threadId: z.string(),
-    turn: z
-      .object({
-        error: z.object({ message: z.string() }).passthrough().nullable().optional(),
-        id: z.string(),
-        status: z.enum(['completed', 'interrupted', 'failed', 'inProgress']),
-      })
-      .passthrough(),
-  })
-  .passthrough()
-const turnStartedSchema = z
-  .object({
-    threadId: z.string(),
-    turn: z.object({ id: z.string().min(1) }).passthrough(),
-  })
-  .passthrough()
+const accountResponseSchema = z.looseObject({
+  account: accountSchema.nullable(),
+  requiresOpenaiAuth: z.boolean(),
+})
+const modelResponseSchema = z.looseObject({
+  data: z.array(
+    z.looseObject({
+      defaultReasoningEffort: z.string().min(1),
+      displayName: z.string().min(1),
+      hidden: z.boolean(),
+      id: z.string().min(1),
+      isDefault: z.boolean(),
+      supportedReasoningEfforts: z.array(
+        z.looseObject({ description: z.string(), reasoningEffort: z.string().min(1) }),
+      ),
+    }),
+  ),
+  nextCursor: z.string().nullable().optional(),
+})
+const threadStartResponseSchema = z.looseObject({
+  instructionSources: z.array(z.string()).optional(),
+  thread: z.looseObject({ id: z.string().min(1) }),
+})
+const reviewStartResponseSchema = z.looseObject({
+  reviewThreadId: z.string().min(1),
+  turn: z.looseObject({ id: z.string().min(1) }),
+})
+const itemCompletedSchema = z.looseObject({
+  item: z.looseObject({
+    id: z.string(),
+    review: z.string(),
+    type: z.literal('exitedReviewMode'),
+  }),
+  threadId: z.string(),
+  turnId: z.string(),
+})
+const turnCompletedSchema = z.looseObject({
+  threadId: z.string(),
+  turn: z.looseObject({
+    error: z.looseObject({ message: z.string() }).nullable().optional(),
+    id: z.string(),
+    status: z.enum(['completed', 'interrupted', 'failed', 'inProgress']),
+  }),
+})
+const turnStartedSchema = z.looseObject({
+  threadId: z.string(),
+  turn: z.looseObject({ id: z.string().min(1) }),
+})
 
 type AccountResponseProjection = Pick<GetAccountResponse, 'account' | 'requiresOpenaiAuth'>
 type ModelProjection = Pick<
@@ -142,14 +132,16 @@ interface PendingRequest {
 }
 
 interface ActiveReview {
+  cancelInFlight: boolean
   cancelRequested: boolean
   completed: boolean
   instructionSources: string[]
+  interruptTurnId: string | null
   markdown: string | null
   reject: (error: Error) => void
   resolve: (value: BackendReviewResult) => void
+  reviewTurnId: string | null
   threadId: string
-  turnId: string | null
 }
 
 export interface StartBackendReviewInput {
@@ -326,14 +318,16 @@ export class CodexAppServerBackend implements ReviewBackend {
       rejectReview = reject
     })
     this.activeReview = {
+      cancelInFlight: false,
       cancelRequested: false,
       completed: false,
       instructionSources: threadResult.instructionSources,
+      interruptTurnId: null,
       markdown: null,
       reject: rejectReview,
       resolve: resolveReview,
+      reviewTurnId: null,
       threadId: threadResult.thread.id,
-      turnId: null,
     }
 
     try {
@@ -352,10 +346,9 @@ export class CodexAppServerBackend implements ReviewBackend {
         throw new Error('The review ended before Codex returned its run identifier.')
       }
       this.activeReview.threadId = reviewResult.reviewThreadId
-      this.activeReview.turnId ??= reviewResult.turn.id
+      this.activeReview.reviewTurnId = reviewResult.turn.id
       if (this.activeReview.cancelRequested) {
-        await this.interruptActiveReview()
-        this.rejectActiveReview(new Error('The review was cancelled.'))
+        await this.cancelActiveReviewIfReady()
       }
       this.finishActiveReviewIfReady()
       return await resultPromise
@@ -370,10 +363,7 @@ export class CodexAppServerBackend implements ReviewBackend {
       throw new Error('No review is currently running.')
     }
     this.activeReview.cancelRequested = true
-    if (this.activeReview.turnId) {
-      await this.interruptActiveReview()
-      this.rejectActiveReview(new Error('The review was cancelled.'))
-    }
+    await this.cancelActiveReviewIfReady()
   }
 
   async stop(): Promise<void> {
@@ -476,7 +466,14 @@ export class CodexAppServerBackend implements ReviewBackend {
       const validated = turnStartedSchema.safeParse(params)
       const parsed = validated.success ? (validated.data as TurnStartedProjection) : null
       if (parsed && this.activeReview && parsed.threadId === this.activeReview.threadId) {
-        this.activeReview.turnId = parsed.turn.id
+        this.activeReview.interruptTurnId = parsed.turn.id
+        if (this.activeReview.cancelRequested) {
+          void this.cancelActiveReviewIfReady().catch((error: unknown) => {
+            this.rejectActiveReview(
+              error instanceof Error ? error : new Error('The review could not be cancelled.'),
+            )
+          })
+        }
       }
       return
     }
@@ -484,7 +481,12 @@ export class CodexAppServerBackend implements ReviewBackend {
     if (method === 'item/completed') {
       const validated = itemCompletedSchema.safeParse(params)
       const parsed = validated.success ? (validated.data as ItemCompletedProjection) : null
-      if (parsed && this.activeReview && parsed.threadId === this.activeReview.threadId) {
+      if (
+        parsed &&
+        this.activeReview &&
+        parsed.threadId === this.activeReview.threadId &&
+        parsed.turnId === this.activeReview.reviewTurnId
+      ) {
         this.activeReview.markdown = parsed.item.review
         this.finishActiveReviewIfReady()
       }
@@ -498,7 +500,7 @@ export class CodexAppServerBackend implements ReviewBackend {
         !parsed ||
         !this.activeReview ||
         parsed.threadId !== this.activeReview.threadId ||
-        (this.activeReview.turnId && parsed.turn.id !== this.activeReview.turnId)
+        (this.activeReview.reviewTurnId && parsed.turn.id !== this.activeReview.reviewTurnId)
       ) {
         return
       }
@@ -538,13 +540,25 @@ export class CodexAppServerBackend implements ReviewBackend {
     review?.reject(error)
   }
 
-  private async interruptActiveReview(): Promise<void> {
+  private async cancelActiveReviewIfReady(): Promise<void> {
     const review = this.activeReview
-    if (!review?.turnId) {
+    if (!review?.cancelRequested || !review.interruptTurnId || review.cancelInFlight) {
       return
     }
-    const params: TurnInterruptParams = { threadId: review.threadId, turnId: review.turnId }
-    await this.request('turn/interrupt', params)
+    review.cancelInFlight = true
+    const params: TurnInterruptParams = {
+      threadId: review.threadId,
+      turnId: review.interruptTurnId,
+    }
+    try {
+      await this.request('turn/interrupt', params)
+      if (this.activeReview === review) {
+        this.rejectActiveReview(new Error('The review was cancelled.'))
+      }
+    } catch (error) {
+      review.cancelInFlight = false
+      throw error
+    }
   }
 
   private request(method: string, params: unknown): Promise<unknown> {
