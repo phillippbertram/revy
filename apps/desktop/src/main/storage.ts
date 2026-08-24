@@ -5,6 +5,7 @@ import type {
   AgentActivityEntry,
   AppSettings,
   RepositoryPreferences,
+  ReviewContext,
   ReviewDocument,
   ReviewMetadata,
   ReviewRun,
@@ -17,6 +18,7 @@ import {
   agentActivityEntrySchema,
   appSettingsSchema,
   repositoryPreferencesSchema,
+  reviewContextSchema,
   reviewMetadataSchema,
   reviewRunMetadataSchema,
   structuredReviewSchema,
@@ -38,6 +40,10 @@ const defaultSettings: AppSettings = {
 const defaultRepositoryPreferences: RepositoryPreferences = {
   baseBranch: null,
   instructionFile: null,
+}
+
+const defaultReviewContext: ReviewContext = {
+  userStory: null,
 }
 
 function parseSettings(value: unknown): AppSettings {
@@ -97,6 +103,35 @@ async function readStructuredReview(path: string): Promise<StructuredReview | nu
   const parsed = structuredReviewSchema.safeParse(value)
   if (!parsed.success) {
     throw new Error('The saved structured review is invalid.')
+  }
+  return parsed.data
+}
+
+async function readReviewContext(path: string): Promise<ReviewContext> {
+  let content: string
+  try {
+    content = await readFile(path, 'utf8')
+  } catch (error) {
+    if (
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      (error as { code?: unknown }).code === 'ENOENT'
+    ) {
+      return { ...defaultReviewContext }
+    }
+    throw error
+  }
+
+  let value: unknown
+  try {
+    value = JSON.parse(content) as unknown
+  } catch {
+    throw new Error('The saved review context is invalid.')
+  }
+  const parsed = reviewContextSchema.safeParse(value)
+  if (!parsed.success) {
+    throw new Error('The saved review context is invalid.')
   }
   return parsed.data
 }
@@ -188,10 +223,12 @@ export class AppStore {
 
   async saveReview(
     metadata: ReviewMetadata,
+    context: ReviewContext,
     content: StructuredReview,
     markdown: string,
   ): Promise<ReviewDocument> {
     const validatedMetadata = reviewMetadataSchema.parse(metadata)
+    const validatedContext = reviewContextSchema.parse(context)
     const validatedContent = structuredReviewSchema.parse(content)
     const reviewsDirectory = join(
       await this.ensureRepositoryDirectory(validatedMetadata.repositoryRoot),
@@ -199,10 +236,17 @@ export class AppStore {
     )
     const reviewDirectory = join(reviewsDirectory, validatedMetadata.id)
     await mkdir(reviewDirectory, { recursive: true })
+    await writeJsonAtomic(join(reviewDirectory, 'context.json'), validatedContext)
     await writeJsonAtomic(join(reviewDirectory, 'review.json'), validatedContent)
     await writeFile(join(reviewDirectory, 'review.md'), markdown, 'utf8')
     await writeJsonAtomic(join(reviewDirectory, 'metadata.json'), validatedMetadata)
-    return { content: validatedContent, markdown, metadata: validatedMetadata, stale: false }
+    return {
+      content: validatedContent,
+      context: validatedContext,
+      markdown,
+      metadata: validatedMetadata,
+      stale: false,
+    }
   }
 
   async createRun(metadata: ReviewRunMetadata): Promise<ReviewRunSummary> {
@@ -312,14 +356,21 @@ export class AppStore {
           return null
         }
         let content: StructuredReview | null = null
+        let context = defaultReviewContext
         try {
           content = await readStructuredReview(join(reviewsDirectory, id, 'review.json'))
         } catch {
           logger.warn('Ignored invalid structured review summary', { reviewId: id })
         }
+        try {
+          context = await readReviewContext(join(reviewsDirectory, id, 'context.json'))
+        } catch {
+          logger.warn('Ignored invalid review context summary', { reviewId: id })
+        }
         return {
           ...metadata.data,
           findingCount: content?.findings.length ?? 0,
+          hasUserStory: context.userStory !== null,
           highestPriority: content ? highestReviewPriority(content) : null,
           stale: metadata.data.fingerprint !== fingerprint,
         }
@@ -344,12 +395,14 @@ export class AppStore {
       throw new Error('The selected review is unavailable.')
     }
     const content = await readStructuredReview(join(reviewDirectory, 'review.json'))
+    const context = await readReviewContext(join(reviewDirectory, 'context.json'))
     if (metadata.data.format === 'structured-v1' && !content) {
       throw new Error('The selected structured review is unavailable.')
     }
 
     return {
       content,
+      context,
       markdown: await readFile(join(reviewDirectory, 'review.md'), 'utf8'),
       metadata: metadata.data,
       stale: metadata.data.fingerprint !== fingerprint,

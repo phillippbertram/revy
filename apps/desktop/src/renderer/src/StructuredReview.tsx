@@ -41,13 +41,14 @@ const cardBorderStyles: Record<ReviewPriority, string> = {
 }
 
 interface CopyButtonProps {
+  className?: string
   label: string
   onCopy: (text: string) => Promise<boolean>
+  showLabel?: boolean
   text: string
-  variant?: 'ghost' | 'outline'
 }
 
-export function CopyButton({ label, onCopy, text, variant = 'ghost' }: CopyButtonProps) {
+export function CopyButton({ className, label, onCopy, showLabel = false, text }: CopyButtonProps) {
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {
@@ -61,14 +62,18 @@ export function CopyButton({ label, onCopy, text, variant = 'ghost' }: CopyButto
   return (
     <Button
       aria-label={copied ? `${label} copied` : label}
+      className={`${className ?? ''} ${
+        copied ? 'text-emerald-300' : showLabel ? '' : 'text-muted-foreground'
+      }`}
       onClick={() => {
         void onCopy(text).then(setCopied)
       }}
-      size="sm"
-      variant={variant}
+      size={showLabel ? 'sm' : 'icon-sm'}
+      title={copied ? `${label} copied` : label}
+      variant={showLabel ? 'outline' : 'ghost'}
     >
       {copied ? <Check /> : <Copy />}
-      {copied ? 'Copied' : label}
+      {showLabel && (copied ? 'Copied' : label)}
       <span aria-live="polite" className="sr-only">
         {copied ? `${label} copied to the clipboard.` : ''}
       </span>
@@ -87,7 +92,7 @@ interface FindingCardProps {
 function FindingCard({ finding, index, onCopy, onOpenExternal, onOpenSource }: FindingCardProps) {
   return (
     <Card className={`gap-0 border-l-4 py-0 ${cardBorderStyles[finding.priority]}`}>
-      <CardHeader className="flex-row items-start gap-4 px-5 py-4">
+      <CardHeader className="relative flex-row items-start gap-4 px-5 py-4 pr-14">
         <Badge className={priorityStyles[finding.priority]} variant="outline">
           {finding.priority}
         </Badge>
@@ -98,6 +103,7 @@ function FindingCard({ finding, index, onCopy, onOpenExternal, onOpenSource }: F
           </p>
         </div>
         <CopyButton
+          className="absolute top-3 right-3"
           label="Copy finding"
           onCopy={onCopy}
           text={formatReviewFindingMarkdown(finding)}
@@ -147,7 +153,6 @@ function FindingCard({ finding, index, onCopy, onOpenExternal, onOpenSource }: F
 
 interface StructuredReviewProps {
   content: StructuredReviewContent
-  markdown: string
   onCopy: (text: string) => Promise<boolean>
   onOpenExternal: (url: string) => void
   onOpenSource: (reference: CodeReference) => void
@@ -155,7 +160,6 @@ interface StructuredReviewProps {
 
 export function StructuredReview({
   content,
-  markdown,
   onCopy,
   onOpenExternal,
   onOpenSource,
@@ -180,7 +184,6 @@ export function StructuredReview({
             <CardTitle className="text-xl">{assessment}</CardTitle>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">{content.summary}</p>
           </div>
-          <CopyButton label="Copy review" onCopy={onCopy} text={markdown} variant="outline" />
         </CardHeader>
         <CardContent className="flex flex-wrap items-center gap-2 border-t px-5 py-4">
           <Badge variant="secondary">

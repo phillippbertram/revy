@@ -174,16 +174,16 @@ export function ActivitySurface({
   runs,
 }: ActivitySurfaceProps) {
   return (
-    <div className="grid h-full min-h-0 grid-cols-[19rem_minmax(0,1fr)]">
-      <aside className="min-h-0 border-r bg-card/20">
+    <div className="grid h-full min-h-0 min-w-0 grid-cols-[19rem_minmax(0,1fr)]">
+      <aside className="min-h-0 min-w-0 overflow-hidden border-r bg-card/20">
         <div className="flex h-16 items-center border-b px-5">
           <div>
             <h1 className="font-semibold">Agent activity</h1>
             <p className="text-xs text-muted-foreground">{runs.length} review runs</p>
           </div>
         </div>
-        <ScrollArea className="h-[calc(100%-4rem)]">
-          <div className="space-y-1 p-3">
+        <ScrollArea className="h-[calc(100%-4rem)] w-full">
+          <div className="min-w-0 space-y-1 p-3">
             {runs.length === 0 && (
               <div className="px-3 py-10 text-center text-sm leading-6 text-muted-foreground">
                 Review runs will appear here as soon as they start.
@@ -193,7 +193,7 @@ export function ActivitySurface({
               const duration = runDuration(run)
               return (
                 <button
-                  className={`w-full rounded-lg border px-3 py-3 text-left transition-colors hover:bg-accent/50 ${
+                  className={`block w-full min-w-0 max-w-full overflow-hidden rounded-lg border px-3 py-3 text-left transition-colors hover:bg-accent/50 ${
                     activity?.metadata.id === run.id
                       ? 'border-primary/40 bg-primary/5'
                       : 'border-transparent'
@@ -202,11 +202,13 @@ export function ActivitySurface({
                   onClick={() => onOpen(run.id)}
                   type="button"
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate text-sm font-medium">
+                  <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
+                    <span className="min-w-0 break-words text-sm font-medium [overflow-wrap:anywhere]">
                       {run.branch ?? 'Detached HEAD'}
                     </span>
-                    <Badge variant={statusVariant(run.status)}>{run.status}</Badge>
+                    <Badge className="shrink-0" variant={statusVariant(run.status)}>
+                      {run.status}
+                    </Badge>
                   </div>
                   <p className="mt-1 truncate text-xs text-muted-foreground">{run.model}</p>
                   <p className="mt-2 flex items-center gap-1 text-[0.68rem] text-muted-foreground">
@@ -236,7 +238,7 @@ export function ActivitySurface({
           <div className="mx-auto max-w-4xl px-8 py-8 lg:px-12">
             <header className="mb-8 border-b pb-6">
               <div className="flex flex-wrap items-start justify-between gap-4">
-                <div>
+                <div className="min-w-0 flex-1">
                   <div className="mb-3 flex flex-wrap gap-2">
                     <Badge variant={statusVariant(activity.metadata.status)}>
                       {activity.metadata.status}
@@ -244,7 +246,7 @@ export function ActivitySurface({
                     <Badge variant="outline">{activity.metadata.model}</Badge>
                     <Badge variant="outline">{activity.metadata.reasoningEffort}</Badge>
                   </div>
-                  <h2 className="text-2xl font-semibold tracking-tight">
+                  <h2 className="break-words text-2xl font-semibold tracking-tight [overflow-wrap:anywhere]">
                     {activity.metadata.branch ?? 'Detached HEAD'} → {activity.metadata.baseBranch}
                   </h2>
                   <p className="mt-2 text-sm text-muted-foreground">

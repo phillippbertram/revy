@@ -7,6 +7,14 @@ import {
   CardHeader,
   CardTitle,
 } from '@shippy/ui/components/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@shippy/ui/components/dialog'
 import { Label } from '@shippy/ui/components/label'
 import { ScrollArea } from '@shippy/ui/components/scroll-area'
 import {
@@ -21,6 +29,7 @@ import { Switch } from '@shippy/ui/components/switch'
 import { Textarea } from '@shippy/ui/components/textarea'
 import {
   AlertTriangle,
+  BookOpenText,
   Bot,
   CheckCircle2,
   ChevronRight,
@@ -58,7 +67,7 @@ import { ActivitySurface } from './ActivitySurface'
 import { type CodeReference, MarkdownReview } from './MarkdownReview'
 import { CopyButton, StructuredReview } from './StructuredReview'
 
-type Surface = 'activity' | 'repository' | 'reviews' | 'settings'
+type Surface = 'activity' | 'repository' | 'reviews'
 
 function unwrapResult<T>(result: Result<T>): T {
   if (!result.ok) {
@@ -167,19 +176,42 @@ function SourcePanel({ onClose, source }: { onClose: () => void; source: SourceP
 
 interface SidebarProps {
   bootstrap: BootstrapState
+  onCancelReview: () => void
+  onOpenActivity: () => void
   onOpenRecent: (path: string) => void
+  onSelectRepository: () => void
   onSelectSurface: (surface: Surface) => void
+  progress: ReviewProgress | null
   repository: RepositorySnapshot | null
+  repositoryChangeDisabled: boolean
+  reviewRunning: boolean
   surface: Surface
 }
 
-function Sidebar({ bootstrap, onOpenRecent, onSelectSurface, repository, surface }: SidebarProps) {
+function Sidebar({
+  bootstrap,
+  onCancelReview,
+  onOpenActivity,
+  onOpenRecent,
+  onSelectRepository,
+  onSelectSurface,
+  progress,
+  repository,
+  repositoryChangeDisabled,
+  reviewRunning,
+  surface,
+}: SidebarProps) {
   const items: Array<{ icon: typeof FolderGit2; id: Surface; label: string }> = [
-    { icon: FolderGit2, id: 'repository', label: 'Repository' },
+    { icon: FolderGit2, id: 'repository', label: 'Overview' },
     { icon: History, id: 'reviews', label: 'Reviews' },
     { icon: ListTree, id: 'activity', label: 'Activity' },
-    { icon: Settings2, id: 'settings', label: 'Settings' },
   ]
+  const recentRepositories = bootstrap.settings.recentRepositories.filter(
+    (path) => path !== repository?.root,
+  )
+  const currentBranch = repository ? branchLabel(repository) : null
+  const settingsShortcut = navigator.userAgent.includes('Macintosh') ? '⌘,' : 'Ctrl+,'
+
   return (
     <aside className="flex min-h-0 flex-col border-r bg-card/40">
       <div className="flex h-16 items-center gap-3 px-5">
@@ -191,7 +223,70 @@ function Sidebar({ bootstrap, onOpenRecent, onSelectSurface, repository, surface
           <p className="text-xs text-muted-foreground">Review before you ship</p>
         </div>
       </div>
+      <div className="px-3 pb-3">
+        <div className="mb-2 flex items-center justify-between gap-2 px-2">
+          <p className="text-[0.68rem] font-semibold tracking-[0.14em] text-muted-foreground uppercase">
+            Current project
+          </p>
+          <button
+            className="text-xs font-medium text-primary hover:underline disabled:pointer-events-none disabled:opacity-40"
+            disabled={repositoryChangeDisabled}
+            onClick={onSelectRepository}
+            type="button"
+          >
+            {repository ? 'Change…' : 'Open…'}
+          </button>
+        </div>
+        <div className="rounded-xl border bg-background/60 p-3 shadow-sm shadow-black/5">
+          {repository && currentBranch ? (
+            <>
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <FolderGit2 className="size-3.5" />
+                </span>
+                <p
+                  className="min-w-0 flex-1 truncate text-sm font-semibold"
+                  title={repository.name}
+                >
+                  {repository.name}
+                </p>
+              </div>
+              <p
+                className="mt-2 truncate font-mono text-[0.68rem] text-muted-foreground"
+                title={repository.root}
+              >
+                {repository.root}
+              </p>
+              {repository.baseBranch && (
+                <div className="mt-2 flex min-w-0 items-center gap-1.5 text-[0.68rem] text-muted-foreground">
+                  <span className="min-w-0 flex-1 truncate" title={currentBranch}>
+                    {currentBranch}
+                  </span>
+                  <span className="sr-only">compared with</span>
+                  <span aria-hidden="true" className="shrink-0 text-foreground/60">
+                    →
+                  </span>
+                  <span className="min-w-0 flex-1 truncate" title={repository.baseBranch}>
+                    {repository.baseBranch}
+                  </span>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="py-1">
+              <p className="text-sm font-medium">No repository selected</p>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                Open a local repository to begin.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+      <Separator />
       <nav className="space-y-1 px-3 py-3">
+        <p className="mb-2 px-2 text-[0.68rem] font-semibold tracking-[0.14em] text-muted-foreground uppercase">
+          Project
+        </p>
         {items.map((item) => {
           const Icon = item.icon
           const disabled = (item.id === 'reviews' || item.id === 'activity') && !repository
@@ -202,13 +297,19 @@ function Sidebar({ bootstrap, onOpenRecent, onSelectSurface, repository, surface
                   ? 'bg-accent text-foreground'
                   : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
               } disabled:pointer-events-none disabled:opacity-40`}
+              aria-current={surface === item.id ? 'page' : undefined}
               disabled={disabled}
               key={item.id}
               onClick={() => onSelectSurface(item.id)}
               type="button"
             >
               <Icon className="size-4" />
-              {item.label}
+              <span className="min-w-0 flex-1">{item.label}</span>
+              {item.id === 'activity' && reviewRunning && (
+                <span className="rounded-full bg-primary/15 px-1.5 py-0.5 text-[0.62rem] font-semibold tracking-wide text-primary uppercase">
+                  Live
+                </span>
+              )}
             </button>
           )
         })}
@@ -220,14 +321,17 @@ function Sidebar({ bootstrap, onOpenRecent, onSelectSurface, repository, surface
         </p>
         <ScrollArea className="h-full">
           <div className="space-y-1 pr-2">
-            {bootstrap.settings.recentRepositories.length === 0 && (
+            {recentRepositories.length === 0 && (
               <p className="px-2 py-2 text-xs leading-5 text-muted-foreground">
-                Open a repository to keep it close at hand.
+                {repository
+                  ? 'No other recent repositories.'
+                  : 'Open a repository to keep it close at hand.'}
               </p>
             )}
-            {bootstrap.settings.recentRepositories.map((path) => (
+            {recentRepositories.map((path) => (
               <button
-                className="group flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent/60"
+                className="group flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent/60 disabled:pointer-events-none disabled:opacity-40"
+                disabled={repositoryChangeDisabled}
                 key={path}
                 onClick={() => onOpenRecent(path)}
                 type="button"
@@ -240,24 +344,60 @@ function Sidebar({ bootstrap, onOpenRecent, onSelectSurface, repository, surface
           </div>
         </ScrollArea>
       </div>
-      <div className="border-t p-4">
-        <button
-          className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-accent/60"
-          onClick={() => onSelectSurface('settings')}
-          type="button"
-        >
+      {reviewRunning && progress && (
+        <div className="mx-3 mb-3 rounded-xl border border-primary/30 bg-primary/10 p-3 shadow-lg shadow-primary/5">
+          <div className="flex items-center gap-2">
+            <LoaderCircle className="size-4 shrink-0 animate-spin text-primary" />
+            <p className="text-sm font-semibold">Agent active</p>
+          </div>
+          <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">
+            {progress.message}
+          </p>
+          <div className="mt-3 flex items-center justify-between gap-2">
+            <button
+              className="text-xs font-medium text-primary hover:underline"
+              onClick={onOpenActivity}
+              type="button"
+            >
+              Open activity
+            </button>
+            <Button
+              aria-label="Cancel review"
+              onClick={onCancelReview}
+              size="icon-sm"
+              variant="outline"
+            >
+              <Square className="fill-current" />
+            </Button>
+          </div>
+        </div>
+      )}
+      <div className="border-t p-3">
+        <div className="flex items-start gap-2.5 px-3 py-2">
           <span
-            className={`size-2 rounded-full ${
+            className={`mt-1 size-2 shrink-0 rounded-full ${
               bootstrap.agent.state === 'ready' ? 'bg-emerald-400' : 'bg-amber-400'
             }`}
           />
-          <span className="min-w-0 flex-1">
-            <span className="block text-xs font-medium">Codex {bootstrap.agent.state}</span>
-            <span className="block truncate text-[0.68rem] text-muted-foreground">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-medium text-foreground">Codex {bootstrap.agent.state}</p>
+            <p className="mt-1 break-words font-mono text-[0.68rem] leading-4 text-muted-foreground [overflow-wrap:anywhere]">
               {bootstrap.agent.version ?? 'Not connected'}
-            </span>
-          </span>
-        </button>
+            </p>
+          </div>
+        </div>
+        <DialogTrigger asChild>
+          <button
+            className="mt-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+            type="button"
+          >
+            <Settings2 className="size-4 shrink-0" />
+            <span className="min-w-0 flex-1 text-sm font-medium text-foreground">Settings</span>
+            <kbd className="rounded border bg-muted/50 px-1.5 py-0.5 font-sans text-[0.62rem] text-muted-foreground">
+              {settingsShortcut}
+            </kbd>
+          </button>
+        </DialogTrigger>
       </div>
     </aside>
   )
@@ -270,10 +410,12 @@ interface RepositorySurfaceProps {
   onRefresh: () => void
   onSelectRepository: () => void
   onStartReview: () => void
+  onUserStoryChange: (value: string) => void
   onUpdateBase: (base: string) => void
   onUpdateInstructions: (path: string | null) => void
   progress: ReviewProgress | null
   repository: RepositorySnapshot | null
+  userStory: string
 }
 
 function RepositorySurface({
@@ -283,10 +425,12 @@ function RepositorySurface({
   onRefresh,
   onSelectRepository,
   onStartReview,
+  onUserStoryChange,
   onUpdateBase,
   onUpdateInstructions,
   progress,
   repository,
+  userStory,
 }: RepositorySurfaceProps) {
   if (!repository) {
     return (
@@ -327,25 +471,34 @@ function RepositorySurface({
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-8 lg:p-10">
       <header className="flex flex-wrap items-start justify-between gap-5">
-        <div className="min-w-0">
-          <div className="mb-2 flex items-center gap-2">
-            <Badge variant="outline">{branchLabel(repository)}</Badge>
+        <div className="min-w-0 flex-1">
+          <div className="mb-2 flex min-w-0 items-center gap-2">
+            <Badge
+              className="min-w-0 max-w-72 shrink truncate"
+              title={branchLabel(repository)}
+              variant="outline"
+            >
+              {branchLabel(repository)}
+            </Badge>
             {repository.baseBranch && (
-              <span className="text-xs text-muted-foreground">against {repository.baseBranch}</span>
+              <>
+                <span className="sr-only">compared with</span>
+                <span aria-hidden="true" className="shrink-0 text-xs text-muted-foreground">
+                  →
+                </span>
+                <span
+                  className="min-w-0 max-w-72 truncate text-xs text-muted-foreground"
+                  title={repository.baseBranch}
+                >
+                  {repository.baseBranch}
+                </span>
+              </>
             )}
           </div>
           <h1 className="truncate text-3xl font-semibold tracking-tight">{repository.name}</h1>
           <p className="mt-1 truncate text-sm text-muted-foreground">{repository.root}</p>
         </div>
         <div className="flex gap-2">
-          <Button
-            disabled={busy || Boolean(reviewRunning)}
-            onClick={onSelectRepository}
-            variant="outline"
-          >
-            <FolderOpen />
-            Open
-          </Button>
           <Button disabled={busy || Boolean(reviewRunning)} onClick={onRefresh} variant="outline">
             <RefreshCw />
             Refresh
@@ -357,12 +510,6 @@ function RepositorySurface({
         </div>
       </header>
 
-      {reviewRunning && progress && (
-        <div className="flex items-center gap-3 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3 text-sm">
-          <LoaderCircle className="size-4 animate-spin text-primary" />
-          <span>{progress.message}</span>
-        </div>
-      )}
       {!agentReady && (
         <div className="flex items-center gap-3 rounded-xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
           <AlertTriangle className="size-4" />
@@ -389,7 +536,7 @@ function RepositorySurface({
         <CardHeader>
           <CardTitle>Review scope</CardTitle>
           <CardDescription>
-            Choose the comparison base and optional project review rules.
+            Choose the comparison base, optional project rules, and story context.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-5 md:grid-cols-2">
@@ -443,6 +590,26 @@ function RepositorySurface({
                 Multiple review skills were found. Choose one before starting.
               </p>
             )}
+          </div>
+          <div className="space-y-2 md:col-span-2">
+            <div className="flex items-center justify-between gap-3">
+              <Label htmlFor="user-story">User story (optional)</Label>
+              <span className="text-xs text-muted-foreground">{userStory.length} / 12,000</span>
+            </div>
+            <Textarea
+              className="min-h-40 resize-y"
+              disabled={Boolean(reviewRunning)}
+              id="user-story"
+              maxLength={12_000}
+              onChange={(event) => onUserStoryChange(event.target.value)}
+              placeholder={
+                'Paste a story, description, and acceptance criteria. Markdown is supported.'
+              }
+              value={userStory}
+            />
+            <p className="text-xs leading-5 text-muted-foreground">
+              Used only for the next review and saved with a successful result.
+            </p>
           </div>
         </CardContent>
       </Card>
@@ -544,14 +711,27 @@ function ReviewsSurface({
                 onClick={() => onOpenReview(item.id)}
                 type="button"
               >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-sm font-medium">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span
+                    className="min-w-0 flex-1 truncate text-sm font-medium"
+                    title={item.branch ?? 'Detached HEAD'}
+                  >
                     {item.branch ?? 'Detached HEAD'}
                   </span>
-                  {item.stale && <span className="size-1.5 rounded-full bg-amber-400" />}
+                  <span className="sr-only">compared with</span>
+                  <span aria-hidden="true" className="shrink-0 text-xs text-muted-foreground">
+                    →
+                  </span>
+                  <span
+                    className="min-w-0 max-w-[45%] truncate text-xs text-muted-foreground"
+                    title={item.baseBranch}
+                  >
+                    {item.baseBranch}
+                  </span>
+                  {item.stale && <span className="size-1.5 shrink-0 rounded-full bg-amber-400" />}
                 </div>
-                <p className="mt-1 text-xs text-muted-foreground">against {item.baseBranch}</p>
                 <div className="mt-2 flex flex-wrap gap-1">
+                  {item.hasUserStory && <Badge variant="outline">Story</Badge>}
                   {item.format === 'structured-v1' ? (
                     <>
                       <Badge variant="secondary">
@@ -596,14 +776,14 @@ function ReviewsSurface({
                 <Badge variant="outline">{review.metadata.model}</Badge>
               </div>
               <div className="flex items-center gap-2">
-                {!review.content && (
-                  <CopyButton
-                    label="Copy review"
-                    onCopy={onCopy}
-                    text={formatLegacyReviewMarkdown(review.markdown)}
-                    variant="outline"
-                  />
-                )}
+                <CopyButton
+                  label="Copy review"
+                  onCopy={onCopy}
+                  showLabel
+                  text={
+                    review.content ? review.markdown : formatLegacyReviewMarkdown(review.markdown)
+                  }
+                />
                 <Button onClick={() => onDelete(review.metadata.id)} size="sm" variant="ghost">
                   <Trash2 />
                   Delete
@@ -616,10 +796,35 @@ function ReviewsSurface({
                 HEAD or the working tree changed after this review. Code links show current files.
               </div>
             )}
+            {review.context.userStory && (
+              <details
+                className="group mb-6 rounded-xl border bg-card text-card-foreground shadow-sm"
+                key={review.metadata.id}
+              >
+                <summary className="flex cursor-pointer list-none items-center gap-4 rounded-xl px-5 py-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+                  <span className="flex size-10 shrink-0 items-center justify-center rounded-xl border bg-primary/10 text-primary">
+                    <BookOpenText className="size-5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-semibold leading-none">User story</span>
+                    <span className="mt-2 block text-sm text-muted-foreground">
+                      Requirement context supplied for this review.
+                    </span>
+                  </span>
+                  <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+                </summary>
+                <div className="border-t px-5 py-4">
+                  <MarkdownReview
+                    markdown={review.context.userStory}
+                    onCodeReference={onOpenSource}
+                    onExternalLink={onOpenExternal}
+                  />
+                </div>
+              </details>
+            )}
             {review.content ? (
               <StructuredReview
                 content={review.content}
-                markdown={review.markdown}
                 onCopy={onCopy}
                 onOpenExternal={onOpenExternal}
                 onOpenSource={onOpenSource}
@@ -651,7 +856,7 @@ function ReviewsSurface({
   )
 }
 
-interface SettingsSurfaceProps {
+interface SettingsContentProps {
   bootstrap: BootstrapState
   busy: boolean
   onChooseExecutable: () => void
@@ -660,28 +865,21 @@ interface SettingsSurfaceProps {
   onUpdateSettings: (input: Parameters<typeof window.shippy.updateSettings>[0]) => void
 }
 
-function SettingsSurface({
+function SettingsContent({
   bootstrap,
   busy,
   onChooseExecutable,
   onOpenLogFolder,
   onRefreshAgent,
   onUpdateSettings,
-}: SettingsSurfaceProps) {
+}: SettingsContentProps) {
   const [instructions, setInstructions] = useState(bootstrap.settings.personalInstructions)
   useEffect(() => setInstructions(bootstrap.settings.personalInstructions), [bootstrap.settings])
   const model = bootstrap.agent.models.find(
     (candidate) => candidate.id === bootstrap.settings.model,
   )
   return (
-    <div className="mx-auto max-w-4xl space-y-6 p-8 lg:p-10">
-      <div>
-        <h1 className="text-3xl font-semibold tracking-tight">Settings</h1>
-        <p className="mt-2 text-muted-foreground">
-          Configure the local Codex connection and your default review style.
-        </p>
-      </div>
-
+    <div className="space-y-6 p-6 md:p-7">
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between gap-4">
@@ -859,8 +1057,10 @@ export function App() {
   const [review, setReview] = useState<ReviewDocument | null>(null)
   const [reviews, setReviews] = useState<ReviewSummary[]>([])
   const [runs, setRuns] = useState<ReviewRunSummary[]>([])
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [source, setSource] = useState<SourcePreview | null>(null)
   const [surface, setSurface] = useState<Surface>('repository')
+  const [userStory, setUserStory] = useState('')
 
   const reviewRunning = useMemo(
     () => Boolean(progress && ['preparing', 'running', 'saving'].includes(progress.state)),
@@ -887,6 +1087,23 @@ export function App() {
       window.removeEventListener('error', onError)
       window.removeEventListener('unhandledrejection', onUnhandledRejection)
     }
+  }, [])
+
+  useEffect(() => {
+    function openSettingsWithShortcut(event: KeyboardEvent): void {
+      if (
+        event.code === 'Comma' &&
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.shiftKey
+      ) {
+        event.preventDefault()
+        setSettingsOpen(true)
+      }
+    }
+
+    window.addEventListener('keydown', openSettingsWithShortcut)
+    return () => window.removeEventListener('keydown', openSettingsWithShortcut)
   }, [])
 
   useEffect(() => {
@@ -937,6 +1154,9 @@ export function App() {
   }
 
   function acceptRepository(next: RepositorySnapshot): void {
+    if (repository?.root !== next.root) {
+      setUserStory('')
+    }
     setRepository(next)
     setActivity(null)
     setReview(null)
@@ -1000,8 +1220,12 @@ export function App() {
     setError(null)
     try {
       const document = unwrapResult(
-        await window.shippy.startReview({ baseBranch: repository.baseBranch }),
+        await window.shippy.startReview({
+          baseBranch: repository.baseBranch,
+          userStory: userStory.trim() || null,
+        }),
       )
+      setUserStory('')
       setReview(document)
       setSource(null)
       setRepository(unwrapResult(await window.shippy.refreshRepository()))
@@ -1130,8 +1354,22 @@ export function App() {
     })
   }
 
+  function openLiveActivity(): void {
+    setSurface('activity')
+    if (progress?.reviewId) {
+      void openActivity(progress.reviewId)
+      return
+    }
+    if (!activity && runs[0]) {
+      void openActivity(runs[0].id)
+    }
+  }
+
   function selectSurface(next: Surface): void {
     setSurface(next)
+    if (next === 'reviews' && reviews[0] && review?.metadata.id !== reviews[0].id) {
+      void openReview(reviews[0].id)
+    }
     if (next === 'activity' && !activity && runs[0]) {
       void openActivity(runs[0].id)
     }
@@ -1149,95 +1387,86 @@ export function App() {
   }
 
   return (
-    <main className="grid h-screen min-h-0 grid-cols-[15rem_minmax(0,1fr)] overflow-hidden bg-background text-foreground">
-      <Sidebar
-        bootstrap={bootstrap}
-        onOpenRecent={(path) => void openRecent(path)}
-        onSelectSurface={selectSurface}
-        repository={repository}
-        surface={surface}
-      />
-      <section className="relative min-h-0 min-w-0 overflow-hidden">
-        {error && <ErrorBanner error={error} onClose={() => setError(null)} />}
-        <div className={error ? 'h-[calc(100%-3.05rem)] min-h-0' : 'h-full min-h-0'}>
-          {surface === 'repository' && (
-            <div className="h-full overflow-auto">
-              <RepositorySurface
-                agentReady={bootstrap.agent.state === 'ready'}
-                busy={busy}
-                onChooseInstructions={() => void chooseInstructions()}
-                onRefresh={() => void refreshRepository()}
-                onSelectRepository={() => void openRepository()}
-                onStartReview={() => void startReview()}
-                onUpdateBase={(base) => void updateBase(base)}
-                onUpdateInstructions={(path) => void updateInstructions(path)}
-                progress={progress}
-                repository={repository}
+    <Dialog onOpenChange={setSettingsOpen} open={settingsOpen}>
+      <main className="grid h-screen min-h-0 grid-cols-[15rem_minmax(0,1fr)] overflow-hidden bg-background text-foreground">
+        <Sidebar
+          bootstrap={bootstrap}
+          onCancelReview={() => void cancelReview()}
+          onOpenActivity={openLiveActivity}
+          onOpenRecent={(path) => void openRecent(path)}
+          onSelectRepository={() => void openRepository()}
+          onSelectSurface={selectSurface}
+          progress={progress}
+          repository={repository}
+          repositoryChangeDisabled={busy || reviewRunning}
+          reviewRunning={reviewRunning}
+          surface={surface}
+        />
+        <section className="relative min-h-0 min-w-0 overflow-hidden">
+          {error && <ErrorBanner error={error} onClose={() => setError(null)} />}
+          <div className={error ? 'h-[calc(100%-3.05rem)] min-h-0' : 'h-full min-h-0'}>
+            {surface === 'repository' && (
+              <div className="h-full overflow-auto">
+                <RepositorySurface
+                  agentReady={bootstrap.agent.state === 'ready'}
+                  busy={busy}
+                  onChooseInstructions={() => void chooseInstructions()}
+                  onRefresh={() => void refreshRepository()}
+                  onSelectRepository={() => void openRepository()}
+                  onStartReview={() => void startReview()}
+                  onUserStoryChange={setUserStory}
+                  onUpdateBase={(base) => void updateBase(base)}
+                  onUpdateInstructions={(path) => void updateInstructions(path)}
+                  progress={progress}
+                  repository={repository}
+                  userStory={userStory}
+                />
+              </div>
+            )}
+            {surface === 'reviews' && (
+              <ReviewsSurface
+                onCloseSource={() => setSource(null)}
+                onCopy={copyText}
+                onDelete={(id) => void deleteReview(id)}
+                onOpenExternal={(url) => void openExternal(url)}
+                onOpenReview={(id) => void openReview(id)}
+                onOpenSource={(reference) => void openSource(reference)}
+                review={review}
+                reviews={reviews}
+                source={source}
               />
-            </div>
-          )}
-          {surface === 'reviews' && (
-            <ReviewsSurface
-              onCloseSource={() => setSource(null)}
-              onCopy={copyText}
-              onDelete={(id) => void deleteReview(id)}
-              onOpenExternal={(url) => void openExternal(url)}
-              onOpenReview={(id) => void openReview(id)}
-              onOpenSource={(reference) => void openSource(reference)}
-              review={review}
-              reviews={reviews}
-              source={source}
-            />
-          )}
-          {surface === 'activity' && (
-            <ActivitySurface
-              activity={activity}
-              onDelete={(id) => void deleteActivity(id)}
-              onOpen={(id) => void openActivity(id)}
-              onOpenReview={(id) => void openReviewFromActivity(id)}
-              runs={runs}
-            />
-          )}
-          {surface === 'settings' && (
-            <div className="h-full overflow-auto">
-              <SettingsSurface
-                bootstrap={bootstrap}
-                busy={busy}
-                onChooseExecutable={() => void chooseExecutable()}
-                onOpenLogFolder={() => void openLogFolder()}
-                onRefreshAgent={() => void refreshAgent()}
-                onUpdateSettings={(input) => void updateSettings(input)}
+            )}
+            {surface === 'activity' && (
+              <ActivitySurface
+                activity={activity}
+                onDelete={(id) => void deleteActivity(id)}
+                onOpen={(id) => void openActivity(id)}
+                onOpenReview={(id) => void openReviewFromActivity(id)}
+                runs={runs}
               />
-            </div>
-          )}
-        </div>
-        {reviewRunning && (
-          <div className="absolute right-5 bottom-5 flex items-center gap-3 rounded-xl border bg-card px-4 py-3 shadow-2xl">
-            <LoaderCircle className="size-4 animate-spin text-primary" />
-            <button
-              className="text-left"
-              onClick={() => {
-                setSurface('activity')
-                if (progress?.reviewId) {
-                  void openActivity(progress.reviewId)
-                }
-              }}
-              type="button"
-            >
-              <p className="text-sm font-medium">{progress?.message}</p>
-              <p className="text-xs text-muted-foreground">Open live agent activity</p>
-            </button>
-            <Button
-              aria-label="Cancel review"
-              onClick={() => void cancelReview()}
-              size="icon-sm"
-              variant="outline"
-            >
-              <Square className="fill-current" />
-            </Button>
+            )}
           </div>
-        )}
-      </section>
-    </main>
+        </section>
+      </main>
+      <DialogContent className="flex h-[85vh] max-h-[52rem] min-h-[32rem] w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+        <DialogHeader className="shrink-0 border-b px-6 py-5 pr-14 text-left md:px-7">
+          <DialogTitle className="text-2xl tracking-tight">Settings</DialogTitle>
+          <DialogDescription>
+            Configure the local Codex connection and your default review style.
+          </DialogDescription>
+        </DialogHeader>
+        {error && <ErrorBanner error={error} onClose={() => setError(null)} />}
+        <ScrollArea className="min-h-0 flex-1">
+          <SettingsContent
+            bootstrap={bootstrap}
+            busy={busy}
+            onChooseExecutable={() => void chooseExecutable()}
+            onOpenLogFolder={() => void openLogFolder()}
+            onRefreshAgent={() => void refreshAgent()}
+            onUpdateSettings={(input) => void updateSettings(input)}
+          />
+        </ScrollArea>
+      </DialogContent>
+    </Dialog>
   )
 }

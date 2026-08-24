@@ -197,6 +197,15 @@ export const structuredReviewSchema = z
   .strict()
 export type StructuredReview = z.infer<typeof structuredReviewSchema>
 
+const userStorySchema = z.string().trim().min(1).max(12_000)
+
+export const reviewContextSchema = z
+  .object({
+    userStory: userStorySchema.nullable(),
+  })
+  .strict()
+export type ReviewContext = z.infer<typeof reviewContextSchema>
+
 export const reviewMetadataSchema = z
   .object({
     baseBranch: z.string().min(1),
@@ -220,6 +229,7 @@ export type ReviewMetadata = z.infer<typeof reviewMetadataSchema>
 export const reviewSummarySchema = reviewMetadataSchema
   .extend({
     findingCount: z.number().int().nonnegative(),
+    hasUserStory: z.boolean(),
     highestPriority: reviewPrioritySchema.nullable(),
     stale: z.boolean(),
   })
@@ -229,6 +239,7 @@ export type ReviewSummary = z.infer<typeof reviewSummarySchema>
 export const reviewDocumentSchema = z
   .object({
     content: structuredReviewSchema.nullable(),
+    context: reviewContextSchema,
     markdown: z.string(),
     metadata: reviewMetadataSchema,
     stale: z.boolean(),
@@ -369,7 +380,16 @@ export type UpdateRepositoryPreferencesInput = z.infer<
   typeof updateRepositoryPreferencesInputSchema
 >
 
-export const startReviewInputSchema = z.object({ baseBranch: z.string().min(1).max(256) }).strict()
+export const startReviewInputSchema = z
+  .object({
+    baseBranch: z.string().min(1).max(256),
+    userStory: z
+      .string()
+      .max(12_000)
+      .nullable()
+      .transform((value) => value?.trim() || null),
+  })
+  .strict()
 export type StartReviewInput = z.infer<typeof startReviewInputSchema>
 
 export const readSourceInputSchema = z

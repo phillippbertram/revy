@@ -182,7 +182,7 @@ function registerIpc(): void {
   ipcMain.handle(ipcChannels.reviewStart, (_event, input: unknown) =>
     result(() => {
       const request = startReviewInputSchema.parse(input)
-      return requireService().startReview(request.baseBranch)
+      return requireService().startReview(request)
     }),
   )
   ipcMain.handle(ipcChannels.reviewCancel, () =>

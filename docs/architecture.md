@@ -79,8 +79,13 @@ loads the normal `AGENTS.md` hierarchy itself.
 The custom review instruction order is fixed:
 
 1. non-overridable read-only, scope, structured JSON, priority, and reference contracts;
-2. the selected repository review skill, if any;
-3. personal style instructions.
+2. optional user-story context, explicitly isolated as untrusted requirement data;
+3. the selected repository review skill, if any;
+4. personal style instructions.
+
+When supplied, the user story applies to one run. Codex must assess the story and its acceptance
+criteria in the summary and report concrete unmet requirements through the normal finding model.
+Ambiguous or unassessable requirements stay in the summary rather than becoming invented findings.
 
 Every attempt creates a repository-scoped run record before Codex starts. The UI receives curated
 lifecycle, command, tool, search, subagent, and warning metadata while prompts, reasoning, tool
@@ -109,6 +114,7 @@ repositories/<sha256-of-canonical-root>/
 ├── repository.json
 ├── preferences.json
 ├── reviews/<uuid>/
+│   ├── context.json
 │   ├── metadata.json
 │   ├── review.json
 │   └── review.md
@@ -122,13 +128,15 @@ effort, personal instructions, and the persistent debug-logging switch. Obsolete
 preferences are discarded without resetting the remaining settings. Repository preferences include
 the base branch and one repository-relative Markdown instruction file. JSON files use
 write-then-rename replacement; activity is appended immediately so an interrupted run remains
-inspectable. Review directories without `review.json` remain readable as legacy Markdown. There is
-no database and no file is written to the selected repository.
+inspectable. Review context stores the normalized user story only for successful reviews; a missing
+`context.json` is treated as an empty context for compatibility. Review directories without
+`review.json` remain readable as legacy Markdown. There is no database and no file is written to the
+selected repository.
 
 Diagnostics use `electron-log` in the main process. `main.log` rotates at 5 MiB to one archive;
 normal logging starts at `info`, while the persisted setting enables `debug`. Debug may include
 local paths and stack traces, but logs never include repository contents, prompts, reasoning, raw
-App Server messages, tool arguments, or command output. Shippy does not upload logs.
+App Server messages, user stories, tool arguments, or command output. Shippy does not upload logs.
 
 ## Code-reference security
 
