@@ -10,6 +10,26 @@ The result is a repeatable pre-ship checkpoint: choose the repository, decide wh
 the change needs, follow the reviewers live, and keep an immutable result that is ready to discuss
 or copy into GitHub and GitLab.
 
+## See Revy in action
+
+### Shape the review
+
+Confirm the complete local change scope and choose the reviewer perspectives that fit the work.
+
+![Revy review setup showing branch scope and four specialist reviewers](docs/screenshots/review-setup.jpg)
+
+### Follow every reviewer
+
+Watch specialist reviewers run independently before Revy consolidates their results.
+
+![Revy live workflow showing architecture, security, correctness, and test reviewers](docs/screenshots/review-workflow.jpg)
+
+### Inspect structured findings
+
+Work through prioritized findings with concise explanations and clickable code locations.
+
+![Revy structured review showing a high-priority checkout validation finding](docs/screenshots/review-result.jpg)
+
 ## Why Revy?
 
 Code review often starts too late. A pull request may be open already, local changes may still be
